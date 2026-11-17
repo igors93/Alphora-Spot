@@ -120,12 +120,22 @@ def _cancel_for_config(config, *, confirm: str) -> dict:
                 orig_client_order_id=extract_normal_client_order_id(order) or None,
             )
         )
+    canceled_lists: set[int] = set()
     for order in robot_algo:
+        if getattr(client, "spot_mode", False):
+            order_list_id = int(order.get("orderListId", -1))
+            if order_list_id >= 0 and order_list_id in canceled_lists:
+                continue
+            if order_list_id >= 0:
+                canceled_lists.add(order_list_id)
+        cancel_params = {
+            "algo_id": order.get("algoId"),
+            "client_algo_id": extract_algo_client_id(order) or None,
+        }
+        if getattr(client, "spot_mode", False):
+            cancel_params["symbol"] = config.symbol
         cancelled.append(
-            client.cancel_algo_order(
-                algo_id=order.get("algoId"),
-                client_algo_id=extract_algo_client_id(order) or None,
-            )
+            client.cancel_algo_order(**cancel_params)
         )
     return {"dry_run": False, "symbol": config.symbol, "cancelled": cancelled}
 

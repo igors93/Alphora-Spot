@@ -923,10 +923,14 @@ class BinanceFuturesClient:
             clean_params["quantity"] = str(requested_qty)
             base_asset = _spot_base_asset(symbol)
             with self._spot_state_lock:
-                free_qty, _ = self._spot_balances.get(base_asset, (Decimal("0"), Decimal("0")))
+                free_qty, locked_qty = self._spot_balances.get(
+                    base_asset, (Decimal("0"), Decimal("0"))
+                )
             if free_qty <= 0:
                 raise ValueError("Venda Spot bloqueada: saldo livre zero")
             if free_qty < requested_qty:
+                if free_qty + locked_qty > owned_qty:
+                    raise ValueError("Saldo livre insuficiente em conta Spot com ativos manuais")
                 clean_params["quantity"] = str(free_qty.normalize())
 
         if symbol and requested_qty is not None:

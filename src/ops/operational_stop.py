@@ -94,6 +94,8 @@ def _evaluate_target(
     preview: bool,
     hedge_mode: bool,
 ) -> dict:
+    if getattr(client, "spot_mode", False):
+        client.reconcile_spot_history(config.symbol)
     normal_orders = client.open_orders(config.symbol)
     algo_orders = client.open_algo_orders(config.symbol)
     legs = extract_open_legs(client.position_risk(config.symbol))
