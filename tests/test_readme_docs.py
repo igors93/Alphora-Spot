@@ -97,15 +97,15 @@ def test_documented_env_examples_configure_the_loader(monkeypatch, example):
     )
     monkeypatch.setattr("config.loaders.load_env_file", lambda: "")
     for name in list(os.environ):
-        if name.startswith(("ALPHORA_", "BINANCE_FUTURES_")):
+        if name.startswith(("ALPHORA_", "BINANCE_FUTURES_", "BINANCE_SPOT_")):
             monkeypatch.delenv(name)
     for name, value in variables.items():
         monkeypatch.setenv(name, value)
 
     config = load_config()
 
-    assert config.api_key == variables["BINANCE_FUTURES_API_KEY"]
-    assert config.api_secret == variables["BINANCE_FUTURES_API_SECRET"]
+    assert config.api_key == variables["BINANCE_SPOT_API_KEY"]
+    assert config.api_secret == variables["BINANCE_SPOT_API_SECRET"]
     assert config.execution_mode.value == variables["ALPHORA_EXECUTION_MODE"]
     assert config.environment.value == variables["ALPHORA_ENVIRONMENT"]
 

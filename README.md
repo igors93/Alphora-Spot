@@ -1,6 +1,6 @@
-# Alphora — Futures Trading Engine
+# Alphora — Trading Engine
 
-> An automated algorithmic trading system for Binance Futures with a native desktop interface, multi-mode execution, probabilistic AI scoring, and a full backtesting engine.
+> An automated trading system undergoing a Binance Spot migration, with a native desktop interface, multi-mode execution, and capital rotation across USDT pairs.
 
 ---
 
@@ -20,13 +20,21 @@
 
 ## Overview
 
-Alphora is a production-grade futures trading engine built around a central **Governor** — a supervisory loop that manages symbol lifecycles, evaluates trading opportunities, plans and executes trades, and enforces risk boundaries at every step.
+Alphora uses a central **Governor** to manage symbols, evaluate opportunities, execute trades, and enforce risk boundaries. The Spot rotation strategy reuses this engine; several module names still contain `futures` for compatibility.
+
+### Spot capital rotation
+
+Copy `.env.example` to `.env` and provide Spot API credentials. The example monitors BTC, ETH, SOL, BNB, and XRP, compares trend, momentum, volume, and relative strength, and keeps USDT when no entry qualifies. It can close a profitable holding when momentum weakens while its price is still rising. The example polls every 1 second; order placement still depends on Binance responses and the configured risk gates.
+
+`ALPHORA_POSITION_NOTIONAL_USDT` controls the amount allocated to each new position. The default is a fixed 20 USDT, so rotation does not automatically invest the entire available USDT balance. The default portfolio limit is one open position. Spot stop and take orders are currently virtual: the running engine checks their prices and sends a market sell when triggered. They do not protect a holding while the bot is offline.
+
+Start with `DRY_RUN` or `PAPER_LIVE`; `TESTNET_LIVE` and `REAL_LIVE` submit actual Spot orders to their respective environments. Keep the market type and endpoint consistent: `ALPHORA_MARKET_TYPE=SPOT` with `https://testnet.binance.vision` or `https://api.binance.com`.
 
 Key capabilities:
 
 | Capability | Details |
 |---|---|
-| Exchange | Binance Futures (USDT-M) |
+| Exchange | Binance Spot for capital rotation; legacy Futures modules remain |
 | Interface | Native desktop app + CLI |
 | Execution modes | `DRY_RUN`, `PAPER_LIVE`, `TESTNET_LIVE`, `REAL_LIVE` |
 | Backtesting | Candle-level (OHLCV) CSV backtest engine with multi-timeframe data, realistic fills and metrics reports |
@@ -120,17 +128,18 @@ organização e manutenção.
 Create a `.env` file at the project root (or copy `.env.example`):
 
 ```env
-BINANCE_FUTURES_API_KEY=your_binance_futures_api_key
-BINANCE_FUTURES_API_SECRET=your_binance_futures_api_secret
+ALPHORA_MARKET_TYPE=SPOT
+BINANCE_SPOT_API_KEY=your_binance_spot_api_key
+BINANCE_SPOT_API_SECRET=your_binance_spot_api_secret
 ALPHORA_EXECUTION_MODE=DRY_RUN
 ALPHORA_ENVIRONMENT=TESTNET
 ```
 
 Every mode needs these credentials, including `DRY_RUN`: it never sends orders,
-but it reads the account, positions and open orders through signed Binance
+but it reads the account, balances and open orders through signed Binance
 endpoints. Without them, configuration validation stops before any network call.
-With `ALPHORA_ENVIRONMENT=TESTNET` the default endpoint is the Binance Futures
-demo/testnet (`https://demo-fapi.binance.com`), so use keys created there.
+With `ALPHORA_ENVIRONMENT=TESTNET` and `ALPHORA_MARKET_TYPE=SPOT`, the default
+endpoint is Spot Testnet (`https://testnet.binance.vision`), so use keys created there.
 
 ---
 

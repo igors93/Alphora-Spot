@@ -947,6 +947,9 @@ class AlphoraGovernor:
     def _start_cycle_context(self, context: CycleContext) -> None:
         self._current_cycle_context = context
         self._new_positions_this_cycle = 0
+        begin_cycle = getattr(self.strategy_coordinator, "begin_cycle", None)
+        if callable(begin_cycle):
+            begin_cycle()
 
     def _set_defensive_mode_active(self, active: bool) -> None:
         self._last_defensive_mode_active = active

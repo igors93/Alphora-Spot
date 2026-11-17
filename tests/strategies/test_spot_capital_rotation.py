@@ -343,6 +343,11 @@ def test_rotates_from_open_coin_to_stronger_coin_in_same_governor_cycle(config_f
         portfolio_settings=portfolio_settings,
         max_symbols_per_cycle=3,
     )
+    governor.strategy_coordinator._rotation_board["ADAUSDT"] = {
+        "symbol": "ADAUSDT",
+        "score": 100,
+        "qualifies_for_entry": True,
+    }
 
     orig_light = governor.market_data_router.get_light_snapshot
     orig_heavy = governor.market_data_router.get_heavy_snapshot
@@ -379,6 +384,8 @@ def test_rotates_from_open_coin_to_stronger_coin_in_same_governor_cycle(config_f
 
     # Run 1 Governor cycle: BTC should close and SOL should open in the same cycle!
     governor.run_cycle()
+
+    assert "ADAUSDT" not in governor.strategy_coordinator._rotation_board
 
     btc_pos_after = governor.execution_engine.get_position(symbol_configs[0])
     sol_pos_after = governor.execution_engine.get_position(symbol_configs[2])
@@ -461,3 +468,49 @@ def test_binance_spot_client_adapts_endpoints_balances_positions_and_orders(monk
     client.cancel_all_open_algo_orders("BTCUSDT")
     assert len(client.open_algo_orders("BTCUSDT")) == 0
     assert algo["algoStatus"] == "NEW"
+
+
+def test_spot_position_uses_exchange_balance_and_reports_actual_sell_fill(monkeypatch):
+    client = BinanceSpotClient(
+        api_key="spot_key",
+        api_secret="spot_secret",
+        base_url="https://testnet.binance.vision",
+        spot_mode=True,
+    )
+    submitted_orders: list[dict[str, Any]] = []
+
+    def fake_request(method: str, path: str, params=None, signed=False, timeout=None):
+        if path == "/api/v3/account":
+            return {
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BTC", "free": "0.009", "locked": "0"},
+                ]
+            }
+        if path == "/api/v3/ticker/price":
+            return {"symbol": "BTCUSDT", "price": "65000"}
+        if path == "/api/v3/order" and method == "POST":
+            submitted_orders.append(dict(params))
+            return {
+                "symbol": "BTCUSDT",
+                "status": "FILLED",
+                "side": "SELL",
+                "executedQty": "0.009",
+                "cummulativeQuoteQty": "585",
+            }
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    client._spot_entry_prices["BTCUSDT"] = Decimal("60000")
+    client._spot_position_quantities["BTCUSDT"] = Decimal("0.01")
+
+    position = client.position_risk("BTCUSDT")[0]
+    assert Decimal(position["positionAmt"]) == Decimal("0.009")
+    assert Decimal(position["unRealizedProfit"]) == Decimal("45")
+
+    order = client.new_order(
+        symbol="BTCUSDT", side="SELL", order_type="MARKET", quantity="0.01"
+    )
+    assert Decimal(submitted_orders[0]["quantity"]) == Decimal("0.009")
+    assert Decimal(order["executedQty"]) == Decimal("0.009")
+    assert client._spot_entry_prices["BTCUSDT"] == Decimal("60000")

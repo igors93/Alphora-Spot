@@ -48,6 +48,12 @@ def _validate_connection(config: AppConfig) -> None:
     if not config.base_url.startswith("https://"):
         raise ValueError("BINANCE_FUTURES_BASE_URL precisa comecar com https://")
 
+    host = urlparse(config.base_url).netloc.lower()
+    if os.getenv("ALPHORA_MARKET_TYPE", "").strip().upper() == "SPOT" and (
+        "fapi" in host or "binancefuture" in host
+    ):
+        raise ValueError("ALPHORA_MARKET_TYPE=SPOT exige URL da API Spot")
+
     if not config.api_key:
         raise ValueError(_missing_credential_message("BINANCE_FUTURES_API_KEY", config))
 
@@ -163,11 +169,14 @@ def _validate_order_policy(config: AppConfig) -> None:
         raise ValueError("ALPHORA_EXECUTION_MODE=REAL_LIVE exige ALPHORA_ALLOW_REAL_TRADING=true.")
     _validate_architecture_config(config)
 
-    real_futures_host = urlparse(config.base_url).netloc.lower() == "fapi.binance.com"
+    real_exchange_host = urlparse(config.base_url).netloc.lower() in {
+        "fapi.binance.com",
+        "api.binance.com",
+    }
     if (
         config.execution_mode is ExecutionMode.TESTNET_LIVE
         and config.environment.value == "TESTNET"
-        and real_futures_host
+        and real_exchange_host
         and os.getenv("ALPHORA_ALLOW_TESTNET_REAL_URL", "").strip().lower()
         not in {"true", "1", "yes", "y", "sim"}
     ):

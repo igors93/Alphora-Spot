@@ -85,6 +85,9 @@ class StrategyCoordinator:
                 "IA probabilistica ativa: estrategias fixas ficam fora do fluxo operacional."
             )
 
+    def begin_cycle(self) -> None:
+        self._rotation_board.clear()
+
     def should_evaluate(
         self,
         symbol: str,

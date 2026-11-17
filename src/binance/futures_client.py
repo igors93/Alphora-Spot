@@ -700,7 +700,6 @@ class BinanceFuturesClient:
 
             with self._spot_state_lock:
                 entry_price = self._spot_entry_prices.get(sym) or current_price
-                tracked_qty = self._spot_position_quantities.get(sym)
 
             ref_price = current_price if current_price > 0 else entry_price
             notional = total_qty * ref_price if ref_price > 0 else total_qty
@@ -720,7 +719,7 @@ class BinanceFuturesClient:
                 )
                 continue
 
-            effective_qty = tracked_qty if (tracked_qty is not None and tracked_qty > 0) else total_qty
+            effective_qty = total_qty
             unrealized_pnl = (
                 (current_price - entry_price) * effective_qty
                 if current_price > 0 and entry_price > 0
@@ -775,10 +774,7 @@ class BinanceFuturesClient:
         if not isinstance(response, dict):
             return response
 
-        normalized = self._normalize_spot_order_response(
-            response,
-            requested_sell_qty=requested_qty if side == "SELL" else None,
-        )
+        normalized = self._normalize_spot_order_response(response)
         status = str(normalized.get("status", "") or "").upper()
         if symbol and status in {"FILLED", "PARTIALLY_FILLED"}:
             try:
@@ -795,20 +791,12 @@ class BinanceFuturesClient:
                     if avg_price > 0:
                         self._spot_entry_prices[symbol] = avg_price
                     self._spot_position_quantities[symbol] = exec_qty
-                elif side == "SELL" and status == "FILLED":
-                    self._spot_entry_prices.pop(symbol, None)
-                    self._spot_position_quantities.pop(symbol, None)
-                    for key, order in list(self._spot_algo_orders.items()):
-                        if str(order.get("symbol", "")).upper().strip() == symbol:
-                            self._spot_algo_orders.pop(key, None)
 
         return normalized
 
     @staticmethod
     def _normalize_spot_order_response(
         response: dict[str, Any],
-        *,
-        requested_sell_qty: Decimal | None = None,
     ) -> dict[str, Any]:
         normalized = dict(response)
         cum_quote_raw = normalized.get(
@@ -834,15 +822,6 @@ class BinanceFuturesClient:
 
         if avg_dec <= 0 and exec_qty > 0 and cum_quote > 0:
             normalized["avgPrice"] = str(cum_quote / exec_qty)
-
-        if (
-            requested_sell_qty is not None
-            and requested_sell_qty > 0
-            and str(normalized.get("status", "")).upper() == "FILLED"
-            and Decimal("0") < exec_qty < requested_sell_qty
-        ):
-            normalized["spotActualExecutedQty"] = str(exec_qty)
-            normalized["executedQty"] = str(requested_sell_qty)
 
         return normalized
 

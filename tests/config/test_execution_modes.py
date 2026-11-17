@@ -1,6 +1,10 @@
+from dataclasses import replace
+
 import pytest
 
 from binance.futures_client import BinanceFuturesClient, BinanceFuturesMutationBlocked
+from config import ExecutionMode
+from config.validators import _validate_connection, _validate_order_policy
 
 
 class FakeResponse:
@@ -148,3 +152,21 @@ def test_client_lists_open_orders_of_every_symbol_when_symbol_is_none():
     assert session.calls[1]["url"].endswith("/fapi/v1/openAlgoOrders")
     assert "symbol" not in session.calls[1]["params"]
     assert session.calls[2]["params"]["symbol"] == "BTCUSDT"
+
+
+def test_spot_configuration_rejects_futures_host(monkeypatch, config_factory):
+    monkeypatch.setenv("ALPHORA_MARKET_TYPE", "SPOT")
+    config = replace(config_factory(), base_url="https://demo-fapi.binance.com")
+
+    with pytest.raises(ValueError, match="URL da API Spot"):
+        _validate_connection(config)
+
+
+def test_spot_testnet_rejects_real_host(config_factory):
+    config = replace(
+        config_factory(execution_mode=ExecutionMode.TESTNET_LIVE),
+        base_url="https://api.binance.com",
+    )
+
+    with pytest.raises(ValueError, match="URL real da Binance"):
+        _validate_order_policy(config)
