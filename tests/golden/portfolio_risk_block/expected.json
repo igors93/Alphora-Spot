@@ -1,0 +1,190 @@
+{
+  "stages": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "PORTFOLIO_GOVERNOR",
+      "trace": [
+        {
+          "stage": "light_snapshot_score",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_manual_or_protection_status",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_warmup",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_warmup_pre_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_quarantine_pre_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_pre_heavy_guards",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_light_only",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_request_budget_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "heavy_snapshot",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "intent_creation_hot_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_state_reconciliation_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_warmup_post_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_quarantine_post_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_post_heavy_guards",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "planning_economic_gate_initial",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "apply_intelligent_layers",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_smart_sizing",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "economic_portfolio_pre_execution_inputs",
+          "status": "OK",
+          "terminal": true
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "PORTFOLIO_GOVERNOR",
+      "result": {
+        "stage": "PORTFOLIO_GOVERNOR",
+        "classification": "operacional",
+        "reason": "MAX_TOTAL_EXPOSURE",
+        "action": "OPEN_LONG",
+        "status": "READY",
+        "terminal": true
+      },
+      "plan": {
+        "status": "ALLOW_AGGRESSIVE",
+        "reason": "confirmed",
+        "quantity": "0.5",
+        "notional": "50.0",
+        "stop_price": "99.00",
+        "take_profit_price": "102.00",
+        "expected_net_gain": "0.92500",
+        "expected_net_loss": "0.57500"
+      }
+    }
+  ],
+  "commands": [],
+  "mutations": {
+    "new_order": [],
+    "new_algo_order": [],
+    "cancel_order": [],
+    "cancel_algo_order": []
+  },
+  "queries": {
+    "query_order": []
+  },
+  "exchange_state": {
+    "direction": "NONE",
+    "quantity": "0",
+    "entry_price": "0",
+    "open_algo_orders": []
+  },
+  "journal": [
+    {
+      "type": "economic_gate_evaluated_initial",
+      "payload": {
+        "cycle_id": "<id:1>",
+        "symbol_eval_id": "<id:2>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "allowed": true,
+        "reason": "ECONOMIC_GATE_APPROVED",
+        "expected_net_gain": "0.92500",
+        "expected_net_loss": "0.57500"
+      }
+    },
+    {
+      "type": "economic_gate_evaluated_final",
+      "payload": {
+        "cycle_id": "<id:1>",
+        "symbol_eval_id": "<id:2>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "allowed": true,
+        "reason": "ECONOMIC_GATE_APPROVED",
+        "expected_net_gain": "0.92500",
+        "expected_net_loss": "0.57500"
+      }
+    },
+    {
+      "type": "trade_blocked_by_governor",
+      "payload": {
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "reason": "MAX_TOTAL_EXPOSURE"
+      }
+    },
+    {
+      "type": "governor_evaluate_symbol_flow_decision",
+      "payload": {
+        "cycle_id": "<id:1>",
+        "symbol_eval_id": "<id:2>",
+        "symbol": "BTCUSDT",
+        "stage": "PORTFOLIO_GOVERNOR",
+        "classification": "operacional",
+        "reason": "MAX_TOTAL_EXPOSURE",
+        "action": "OPEN_LONG",
+        "terminal": true,
+        "execution_will_run": false
+      }
+    }
+  ]
+}

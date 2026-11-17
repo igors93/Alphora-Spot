@@ -1,0 +1,10 @@
+{
+  "execution_mode": "TESTNET_LIVE",
+  "score": 95,
+  "score_action": "OPEN_LONG",
+  "score_reason": "ready",
+  "config_overrides": {
+    "governor_defensive_mode_shadow_only": false,
+    "governor_defensive_mode_enforcement_enabled": true
+  }
+}

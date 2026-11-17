@@ -1,0 +1,7 @@
+{
+  "execution_mode": "TESTNET_LIVE",
+  "score": 50,
+  "score_action": "NO_ACTION",
+  "score_reason": "hold",
+  "factory": {"adaptive_manager_enabled": true}
+}

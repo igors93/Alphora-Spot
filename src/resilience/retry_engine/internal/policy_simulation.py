@@ -1,0 +1,335 @@
+"""
+Policy simulation and explanation implementation.
+
+Implements simulate(), preview(), and explain() for RetryPolicy. This is internal;
+the public API is RetryPolicy.simulate(), RetryPolicy.timeline(),
+RetryPolicy.preview(), and RetryPolicy.explain().
+"""
+
+from __future__ import annotations
+
+from typing import Any, cast
+
+from resilience.retry_engine.delays.composite import AdditiveDelay
+from resilience.retry_engine.delays.custom import CustomDelay
+from resilience.retry_engine.delays.stateful import StatefulCustomDelay
+from resilience.retry_engine.diagnostics import (
+    RetryLoadEstimate,
+    RetrySimulation,
+    RetrySimulationAttempt,
+)
+from resilience.retry_engine.exceptions import InvalidRetryConfigError
+from resilience.retry_engine.internal.validation import ensure_positive_int, ensure_resolved_delay
+from resilience.retry_engine.stop.attempts import StopAfterAttempt
+from resilience.retry_engine.stop.composite import AllStopStrategy, AnyStopStrategy
+from resilience.retry_engine.stop.forever import StopForever
+
+
+def _format_seconds(value: float | None) -> str:
+    if value is None:
+        return "unlimited"
+    if value == int(value):
+        return f"{int(value)}s"
+    return f"{value:g}s"
+
+
+def _class_name(value: object) -> str:
+    return value.__class__.__name__
+
+
+def _has_user_callback(strategy: Any) -> bool:
+    """Return True when any delay strategy node wraps a user callback.
+
+    Uses isinstance so subclasses of the callback strategies are detected too.
+    """
+    stack = [strategy]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, (CustomDelay, StatefulCustomDelay)):
+            return True
+        if isinstance(current, AdditiveDelay):
+            stack.extend(current.strategies)
+    return False
+
+
+def _safe_next_delay(policy: Any, attempt_number: int) -> float:
+    """Resolve simulation delay without executing user callbacks."""
+    if _has_user_callback(policy.delay_strategy):
+        raise InvalidRetryConfigError(
+            "Simulation is not supported for policies with custom delay callbacks"
+        )
+    raw_delay = policy.delay_strategy.next_delay(attempt_number)
+    return ensure_resolved_delay(raw_delay)
+
+
+def simulate_policy(policy: Any, attempts: int) -> RetrySimulation:
+    """
+    Compute the delay timeline for a policy without executing user code.
+
+    Accepts Any to avoid a circular import; the caller is always RetryPolicy.
+    """
+    ensure_positive_int("attempts", attempts)
+
+    simulated_attempts: list[RetrySimulationAttempt] = []
+    elapsed = 0.0
+    cumulative = 0.0
+
+    for attempt_number in range(1, attempts + 1):
+        should_stop = policy.stop_strategy.should_stop(attempt_number, elapsed)
+        if not should_stop:
+            delay = _safe_next_delay(policy, attempt_number)
+            if policy.stop_strategy.should_stop(attempt_number, elapsed + delay):
+                should_stop = True
+                delay = 0.0
+        else:
+            delay = 0.0
+        cumulative += delay
+        simulated_attempts.append(
+            RetrySimulationAttempt(
+                attempt_number=attempt_number,
+                delay_before_next_attempt=delay,
+                stops_after_attempt=should_stop,
+                cumulative_sleep=cumulative,
+            )
+        )
+        elapsed += delay
+        if should_stop:
+            break
+
+    return RetrySimulation(tuple(simulated_attempts))
+
+
+def _estimate_attempts(strategy: Any) -> tuple[int | None, bool, bool]:
+    if isinstance(strategy, StopAfterAttempt):
+        return strategy.maximum, False, False
+    if isinstance(strategy, StopForever):
+        return None, True, False
+    if isinstance(strategy, AnyStopStrategy):
+        estimates = [_estimate_attempts(item) for item in strategy.strategies]
+        bounded = [
+            maximum
+            for maximum, unbounded, _partial in estimates
+            if maximum is not None and not unbounded
+        ]
+        if bounded:
+            return min(bounded), False, False
+        if all(unbounded for _maximum, unbounded, _partial in estimates):
+            return None, True, False
+        return None, False, True
+    if isinstance(strategy, AllStopStrategy):
+        estimates = [_estimate_attempts(item) for item in strategy.strategies]
+        if any(unbounded for _maximum, unbounded, _partial in estimates):
+            return None, True, False
+        if all(maximum is not None for maximum, _unbounded, _partial in estimates):
+            return (
+                max(cast(int, maximum) for maximum, _unbounded, _partial in estimates),
+                False,
+                False,
+            )
+        return None, False, True
+    return None, False, True
+
+
+def estimate_policy_load(policy: Any, concurrent_executions: int) -> RetryLoadEstimate:
+    """Estimate worst-case call load for concurrent executions of one policy."""
+    if (
+        not isinstance(concurrent_executions, int)
+        or isinstance(concurrent_executions, bool)
+        or concurrent_executions <= 0
+    ):
+        raise InvalidRetryConfigError("concurrent_executions must be a positive integer")
+
+    maximum_attempts, unbounded, partial = _estimate_attempts(policy.stop_strategy)
+    original_calls = concurrent_executions
+    if maximum_attempts is None:
+        maximum_additional_retries = None
+        maximum_total_calls = None
+    else:
+        maximum_additional_retries = concurrent_executions * max(0, maximum_attempts - 1)
+        maximum_total_calls = original_calls + maximum_additional_retries
+
+    budget = policy.retry_budget
+    return RetryLoadEstimate(
+        concurrent_executions=concurrent_executions,
+        maximum_attempts_per_execution=maximum_attempts,
+        original_calls=original_calls,
+        maximum_additional_retries=maximum_additional_retries,
+        maximum_total_calls=maximum_total_calls,
+        unbounded=unbounded,
+        retry_budget_configured=budget is not None,
+        retry_budget_capacity=budget.max_retries if budget is not None else None,
+        retry_budget_period=budget.per if budget is not None else None,
+        partial=partial,
+    )
+
+
+def _describe_stop(policy: Any) -> str:
+    strategy = policy.stop_strategy
+    name = _class_name(strategy)
+    if name == "StopAfterAttempt":
+        return f"try up to {strategy.maximum} times"
+    if name == "StopAfterDelay":
+        return f"keep trying until {_format_seconds(strategy.seconds)} has elapsed"
+    if name == "StopForever":
+        return "keep trying until the caller stops it"
+    if name in {"AnyStopStrategy", "AllStopStrategy"}:
+        mode = "any" if name == "AnyStopStrategy" else "all"
+        return f"stop using a composed strategy ({mode} stop conditions)"
+    return f"stop using {name}"
+
+
+def _describe_condition(policy: Any) -> str:
+    condition = policy.condition
+    name = _class_name(condition)
+    if name == "ExceptionCondition":
+        exception_types = getattr(condition, "exception_types", ())
+        labels = ", ".join(t.__name__ for t in exception_types) or "configured exceptions"
+        return f"retry on {labels}"
+    if name == "ResultCondition":
+        return "retry when a returned value is rejected by the configured predicate"
+    if name == "CustomCondition":
+        return "retry using a custom condition callback"
+    if name == "AnyCondition":
+        return "retry when any configured condition matches"
+    if name == "AllCondition":
+        return "retry only when all configured conditions match"
+    return f"retry using {name}"
+
+
+def _describe_delay(policy: Any) -> str:
+    delay = policy.delay_strategy
+    name = _class_name(delay)
+    if name == "FixedDelay":
+        return f"wait {_format_seconds(delay.seconds)} between attempts"
+    if name == "LinearDelay":
+        maximum = getattr(delay, "maximum", None)
+        capped = f", capped at {_format_seconds(maximum)}" if maximum is not None else ""
+        return f"wait with linear delay starting at {_format_seconds(delay.start)}{capped}"
+    if name == "ExponentialDelay":
+        maximum = getattr(delay, "maximum", None)
+        capped = f", capped at {_format_seconds(maximum)}" if maximum is not None else ""
+        return f"wait with exponential backoff from {_format_seconds(delay.base)}{capped}"
+    if name == "RandomDelay":
+        return (
+            "wait using a random delay between "
+            f"{_format_seconds(delay.minimum)} and {_format_seconds(delay.maximum)}"
+        )
+    if name == "RandomExponentialDelay":
+        maximum = getattr(delay, "maximum", None)
+        capped = f", capped at {_format_seconds(maximum)}" if maximum is not None else ""
+        return (
+            f"wait using randomized exponential backoff from {_format_seconds(delay.base)}{capped}"
+        )
+    if name == "ChainDelay":
+        return "wait using a predefined delay chain"
+    if name == "AdditiveDelay":
+        return "wait using composed delay strategies"
+    if name == "StatefulCustomDelay":
+        return "wait using a state-aware delay callback"
+    if name == "CustomDelay":
+        return "wait using a custom delay callback"
+    return f"wait using {name}"
+
+
+def _describe_exhaustion(policy: Any) -> str:
+    if policy.should_return_result:
+        return "return a RetryResult object instead of raising or returning the raw value"
+    if policy.exhausted_callback is not None:
+        return "call a fallback when retry attempts are exhausted"
+    if policy.exhausted_exception_factory is not None:
+        return "raise a custom exception when retry attempts are exhausted"
+    if policy.should_raise_last:
+        return "raise the last exception when retry attempts are exhausted"
+    return "return None when an unaccepted exception is not re-raised"
+
+
+def explain_policy(policy: Any) -> str:
+    """Return a human-readable explanation of the policy including warnings."""
+    lines = [
+        "Relinker policy",
+        "",
+        "This policy will:",
+        f"- {_describe_stop(policy)}",
+        f"- {_describe_condition(policy)}",
+        f"- {_describe_delay(policy)}",
+        f"- {_describe_exhaustion(policy)}",
+    ]
+    if policy.name is not None:
+        lines.insert(2, f"Name: {policy.name}")
+        lines.insert(3, "")
+    if policy.retry_budget is not None:
+        lines.append(
+            f"- share at most {policy.retry_budget.max_retries} retries every "
+            f"{_format_seconds(policy.retry_budget.per)} under the budget key "
+            f'"{policy.retry_budget_key}"'
+        )
+
+    lines.extend(
+        [
+            "",
+            "Technical details:",
+            f"- Stop strategy: {_class_name(policy.stop_strategy)}",
+            f"- Delay strategy: {_class_name(policy.delay_strategy)}",
+            f"- Condition: {_class_name(policy.condition)}",
+        ]
+    )
+    if policy.retry_budget is not None:
+        lines.append("- Retry budget: RetryBudget")
+
+    policy_warnings = policy.warnings()
+    if policy_warnings:
+        lines.extend(["", "Warnings:"])
+        for warning in policy_warnings:
+            lines.append(f"- {warning.code}: {warning.message}")
+            if warning.hint:
+                lines.append(f"  Hint: {warning.hint}")
+
+    return "\n".join(lines)
+
+
+def preview_policy(
+    policy: Any,
+    attempts: int = 5,
+    concurrent_executions: int | None = None,
+) -> str:
+    """Return a concise preview of the delay timeline and warnings."""
+    simulation = simulate_policy(policy, attempts)
+    lines = [
+        "Relinker preview",
+        "",
+        f"Attempts previewed: {simulation.attempt_count}",
+        f"Estimated total sleep: {simulation.total_sleep:.4f}s",
+        "",
+        "Timeline:",
+    ]
+
+    for attempt in simulation.attempts:
+        marker = " -> stop" if attempt.stops_after_attempt else ""
+        lines.append(
+            f"- Attempt {attempt.attempt_number}: "
+            f"wait {attempt.delay_before_next_attempt:.4f}s{marker}"
+        )
+
+    if policy.retry_budget is not None:
+        lines.extend(
+            [
+                "",
+                (
+                    "Shared retry-budget waiting is not included because it depends "
+                    "on runtime activity."
+                ),
+            ]
+        )
+
+    if concurrent_executions is not None:
+        lines.extend(["", "Load worst-case estimate:"])
+        estimate = estimate_policy_load(policy, concurrent_executions)
+        lines.extend(f"- {line}" for line in estimate.describe().splitlines()[2:] if line)
+
+    warnings = policy.warnings()
+    if warnings:
+        lines.extend(["", "Warnings:"])
+        for warning in warnings:
+            lines.append(f"- {warning.code}: {warning.message}")
+
+    return "\n".join(lines)

@@ -1,0 +1,4 @@
+{
+  "light": {"price": "100"},
+  "heavy": {"price": "100", "mark_price": "100"}
+}

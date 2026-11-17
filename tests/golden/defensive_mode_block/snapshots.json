@@ -1,0 +1,11 @@
+{
+  "light": {"price": "100"},
+  "heavy": {"price": "100", "mark_price": "100"},
+  "market_health": {
+    "enabled": true,
+    "running": true,
+    "connected": false,
+    "stale_symbols": 1,
+    "largest_price_age_seconds": 30.0
+  }
+}

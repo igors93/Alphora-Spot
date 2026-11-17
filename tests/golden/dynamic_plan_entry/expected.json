@@ -1,0 +1,338 @@
+{
+  "stages": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "NON_TERMINAL",
+      "trace": [
+        {
+          "stage": "light_snapshot_score",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_manual_or_protection_status",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_warmup",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_warmup_pre_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_quarantine_pre_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_pre_heavy_guards",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_light_only",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_request_budget_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "heavy_snapshot",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "intent_creation_hot_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_state_reconciliation_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_warmup_post_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_quarantine_post_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_post_heavy_guards",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "planning_economic_gate_initial",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "apply_intelligent_layers",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_smart_sizing",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "economic_portfolio_pre_execution_inputs",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_learning_execution_guards",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_smart_execution",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_execution_planner",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "pre_execution_execution",
+          "status": "OK",
+          "terminal": false
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "NON_TERMINAL",
+      "result": null,
+      "plan": {
+        "status": "ALLOW_AGGRESSIVE",
+        "reason": "confirmed",
+        "quantity": "0.5",
+        "notional": "50.0",
+        "stop_price": "99.00",
+        "take_profit_price": "102.00",
+        "expected_net_gain": "0.92500",
+        "expected_net_loss": "0.57500"
+      }
+    }
+  ],
+  "commands": [
+    {
+      "symbol": "BTCUSDT",
+      "action": "OPEN_LONG",
+      "quantity": "0.5",
+      "market_price": "100",
+      "stop_price": "99.00",
+      "take_profit_price": "102.00",
+      "trade_plan_id": "<id:1>",
+      "intent_id": "<id:2>",
+      "execution_command_id": "<id:3>"
+    }
+  ],
+  "mutations": {
+    "new_order": [
+      {
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "type": "MARKET",
+        "quantity": "0.5",
+        "newOrderRespType": "RESULT",
+        "newClientOrderId": "<id:4>"
+      }
+    ],
+    "new_algo_order": [
+      {
+        "symbol": "BTCUSDT",
+        "side": "SELL",
+        "type": "STOP_MARKET",
+        "triggerPrice": "99",
+        "closePosition": "true",
+        "workingType": "MARK_PRICE",
+        "algoType": "CONDITIONAL",
+        "clientAlgoId": "<id:5>"
+      },
+      {
+        "symbol": "BTCUSDT",
+        "side": "SELL",
+        "type": "TAKE_PROFIT_MARKET",
+        "triggerPrice": "102",
+        "closePosition": "true",
+        "workingType": "MARK_PRICE",
+        "algoType": "CONDITIONAL",
+        "clientAlgoId": "<id:6>"
+      }
+    ],
+    "cancel_order": [],
+    "cancel_algo_order": []
+  },
+  "queries": {
+    "query_order": []
+  },
+  "exchange_state": {
+    "direction": "LONG",
+    "quantity": "0.5",
+    "entry_price": "100",
+    "open_algo_orders": [
+      {
+        "type": "STOP_MARKET",
+        "trigger_price": "99"
+      },
+      {
+        "type": "TAKE_PROFIT_MARKET",
+        "trigger_price": "102"
+      }
+    ]
+  },
+  "journal": [
+    {
+      "type": "economic_gate_evaluated_initial",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "allowed": true,
+        "reason": "ECONOMIC_GATE_APPROVED",
+        "expected_net_gain": "0.92500",
+        "expected_net_loss": "0.57500"
+      }
+    },
+    {
+      "type": "economic_gate_evaluated_final",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "allowed": true,
+        "reason": "ECONOMIC_GATE_APPROVED",
+        "expected_net_gain": "0.92500",
+        "expected_net_loss": "0.57500"
+      }
+    },
+    {
+      "type": "coalestra_pre_execution_revalidated",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG"
+      }
+    },
+    {
+      "type": "portfolio_trade_approved",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "reason": "APPROVED",
+        "trade_plan_id": "<id:1>",
+        "planned_quantity": "0.5",
+        "planned_stop_price": "99.00",
+        "planned_take_profit_price": "102.00",
+        "execution_will_run": false,
+        "intent_id": "<id:2>"
+      }
+    },
+    {
+      "type": "trade_approved",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "intent_id": "<id:2>",
+        "reason": "APPROVED",
+        "trade_plan_id": "<id:1>",
+        "planned_quantity": "0.5",
+        "planned_stop_price": "99.00",
+        "planned_take_profit_price": "102.00"
+      }
+    },
+    {
+      "type": "governor_evaluate_symbol_flow_decision",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "stage": "EXECUTION_APPROVED",
+        "classification": "operacional",
+        "reason": "APPROVED",
+        "action": "OPEN_LONG",
+        "terminal": false,
+        "execution_will_run": true
+      }
+    },
+    {
+      "type": "execution_payload_sent",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "intent_id": "<id:2>",
+        "execution_command_id": "<id:3>",
+        "reason": "confirmed",
+        "trade_plan_id": "<id:1>",
+        "planned_quantity": "0.5",
+        "planned_stop_price": "99.00",
+        "planned_take_profit_price": "102.00",
+        "market_price": "100",
+        "expected_net_gain": "0.92500",
+        "expected_net_loss": "0.57500"
+      }
+    },
+    {
+      "type": "command_dispatched",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "execution_command_id": "<id:3>",
+        "intent_id": "<id:2>",
+        "trade_plan_id": "<id:1>",
+        "planned_quantity": "0.5",
+        "planned_stop_price": "99.00",
+        "planned_take_profit_price": "102.00"
+      }
+    },
+    {
+      "type": "execution_confirmed",
+      "payload": {
+        "cycle_id": "<id:7>",
+        "symbol_eval_id": "<id:8>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "execution_command_id": "<id:3>",
+        "intent_id": "<id:2>",
+        "trade_plan_id": "<id:1>",
+        "status": "CONFIRMED",
+        "position_changed": true,
+        "reason": "POSITION_OPEN_CONFIRMED",
+        "order_ids": [
+          "<id:4>"
+        ]
+      }
+    }
+  ]
+}

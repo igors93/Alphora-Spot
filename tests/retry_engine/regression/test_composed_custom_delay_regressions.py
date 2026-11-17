@@ -1,0 +1,67 @@
+"""Regression tests for custom callbacks hidden inside composed delays."""
+
+from __future__ import annotations
+
+from contextlib import suppress
+
+from resilience.retry_engine import InvalidRetryConfigError, RetryPolicy
+
+
+def test_simulate_does_not_execute_custom_callback_inside_additive_delay() -> None:
+    """Simulation must not execute a custom delay nested inside jitter composition."""
+    calls: list[int] = []
+
+    def custom_delay(attempt_number: int) -> float:
+        calls.append(attempt_number)
+        return 1.0
+
+    policy = RetryPolicy().attempts(3).custom_delay(custom_delay).jitter(maximum=0.0)
+
+    # Rejecting simulation is acceptable; executing application code is not.
+    with suppress(InvalidRetryConfigError):
+        policy.simulate(attempts=3)
+
+    assert calls == []
+
+
+def test_warnings_do_not_execute_custom_callback_inside_additive_delay() -> None:
+    """Reading warnings must remain free of application callback side effects."""
+    calls: list[int] = []
+
+    def custom_delay(attempt_number: int) -> float:
+        calls.append(attempt_number)
+        return 1.0
+
+    policy = RetryPolicy().attempts(3).custom_delay(custom_delay).jitter(maximum=0.0)
+
+    policy.warnings()
+
+    assert calls == []
+
+
+def test_simulate_detects_subclasses_of_callback_delays() -> None:
+    """Detection used class names, so a renamed subclass executed its callback."""
+    import pytest
+
+    from resilience.retry_engine.delays.custom import CustomDelay
+    from resilience.retry_engine.delays.stateful import StatefulCustomDelay
+
+    calls: list[object] = []
+
+    class BusinessHoursDelay(CustomDelay):
+        pass
+
+    class HeaderAwareDelay(StatefulCustomDelay):
+        pass
+
+    for delay in (
+        BusinessHoursDelay(lambda attempt: calls.append(attempt) or 1.0),
+        HeaderAwareDelay(lambda state: calls.append(state) or 1.0),
+    ):
+        policy = RetryPolicy(delay_strategy=delay).attempts(3)
+        with pytest.raises(InvalidRetryConfigError, match="custom delay callbacks"):
+            policy.simulate(attempts=3)
+        with pytest.raises(InvalidRetryConfigError, match="custom delay callbacks"):
+            policy.jitter(maximum=0.0).simulate(attempts=3)
+
+    assert calls == []

@@ -1,0 +1,176 @@
+{
+  "stages": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "ECONOMIC_GATE",
+      "trace": [
+        {
+          "stage": "light_snapshot_score",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_manual_or_protection_status",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_warmup",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_warmup_pre_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_quarantine_pre_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_pre_heavy_guards",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_light_only",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_request_budget_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "heavy_snapshot",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "intent_creation_hot_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_state_reconciliation_guard",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_warmup_post_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_symbol_quarantine_post_heavy",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "run_post_heavy_guards",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "planning_economic_gate_initial",
+          "status": "OK",
+          "terminal": true
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "ECONOMIC_GATE",
+      "result": {
+        "stage": "ECONOMIC_GATE",
+        "classification": "economico",
+        "reason": "PLAN_STATUS_NOT_EXECUTABLE",
+        "action": "OPEN_LONG",
+        "status": "IN_POSITION",
+        "terminal": true
+      },
+      "plan": {
+        "status": "BLOCK_SAFETY",
+        "reason": "confirmed",
+        "quantity": "0",
+        "notional": "0",
+        "stop_price": null,
+        "take_profit_price": null,
+        "expected_net_gain": null,
+        "expected_net_loss": null
+      }
+    }
+  ],
+  "commands": [],
+  "mutations": {
+    "new_order": [],
+    "new_algo_order": [],
+    "cancel_order": [],
+    "cancel_algo_order": []
+  },
+  "queries": {
+    "query_order": []
+  },
+  "exchange_state": {
+    "direction": "LONG",
+    "quantity": "0.5",
+    "entry_price": "100",
+    "open_algo_orders": [
+      {
+        "type": "STOP_MARKET",
+        "trigger_price": "99"
+      },
+      {
+        "type": "TAKE_PROFIT_MARKET",
+        "trigger_price": "102"
+      }
+    ]
+  },
+  "journal": [
+    {
+      "type": "economic_gate_evaluated_initial",
+      "payload": {
+        "cycle_id": "<id:1>",
+        "symbol_eval_id": "<id:2>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "allowed": false,
+        "reason": "PLAN_STATUS_NOT_EXECUTABLE",
+        "expected_net_gain": null,
+        "expected_net_loss": null
+      }
+    },
+    {
+      "type": "trade_blocked_by_economic_gate",
+      "payload": {
+        "cycle_id": "<id:1>",
+        "symbol_eval_id": "<id:2>",
+        "symbol": "BTCUSDT",
+        "action": "OPEN_LONG",
+        "allowed": false,
+        "reason": "PLAN_STATUS_NOT_EXECUTABLE",
+        "expected_net_gain": null,
+        "expected_net_loss": null
+      }
+    },
+    {
+      "type": "governor_evaluate_symbol_flow_decision",
+      "payload": {
+        "cycle_id": "<id:1>",
+        "symbol_eval_id": "<id:2>",
+        "symbol": "BTCUSDT",
+        "stage": "ECONOMIC_GATE",
+        "classification": "economico",
+        "reason": "PLAN_STATUS_NOT_EXECUTABLE",
+        "action": "OPEN_LONG",
+        "terminal": true,
+        "execution_will_run": false
+      }
+    }
+  ]
+}

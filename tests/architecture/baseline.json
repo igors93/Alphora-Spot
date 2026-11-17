@@ -1,0 +1,15 @@
+{
+  "package_cycles": 0,
+  "functions_over_150": 43,
+  "largest_function_lines": 363,
+  "untyped_context_fields": 0,
+  "governor_mixin_count": 0,
+  "governor_dynamic_self_lookups": 0,
+  "largest_governor_function_lines": 127,
+  "mypy_ignored_modules": 0,
+  "governor_new_bypass_files": 0,
+  "legacy_name_refs": 0,
+  "largest_snapshot_provider_file_lines": 672,
+  "legacy_event_calls": 0,
+  "journal_constructions_outside_owner": 0
+}

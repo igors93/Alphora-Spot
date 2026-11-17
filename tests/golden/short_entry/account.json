@@ -1,0 +1,6 @@
+{
+  "balance": "1000",
+  "position": {"direction": "NONE", "quantity": "0", "entry_price": "0"},
+  "open_orders": [],
+  "open_algo_orders": []
+}

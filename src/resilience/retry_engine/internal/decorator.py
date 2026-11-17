@@ -1,0 +1,66 @@
+"""
+Decorator wrapping for RetryPolicy.__call__.
+
+Creates sync and async wrappers that attach retry statistics and the three
+standard attributes (retry_stats, retry_policy, with_policy). This is internal;
+the public API is the RetryPolicy()(function) call.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from functools import wraps
+from typing import TYPE_CHECKING, Any, cast
+
+from resilience.retry_engine.internal.callables import ensure_retryable_callable, is_async_callable
+from resilience.retry_engine.internal.exhaustion import resolve_tracked_result
+from resilience.retry_engine.stats import RetryStats
+
+if TYPE_CHECKING:
+    from resilience.retry_engine.policy import RetryPolicy
+
+
+def make_decorated(
+    policy: RetryPolicy[Any],
+    function: Callable[..., Any],
+) -> Callable[..., Any]:
+    """
+    Wrap function with retry logic and attach statistics attributes.
+
+    Returns an async wrapper for coroutine functions, sync wrapper otherwise.
+    Both wrappers preserve the original function's __name__, __doc__, and
+    other attributes via functools.wraps.
+    """
+    ensure_retryable_callable(function)
+    stats = RetryStats()
+    # Policies are immutable, so the tracking copy is built once per decoration.
+    tracking_policy = policy.return_result()
+
+    def with_policy(new_policy: RetryPolicy[Any]) -> Callable[..., Any]:
+        return new_policy(function)
+
+    if is_async_callable(function):
+
+        @wraps(function)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            result = await tracking_policy.run_async(function, *args, **kwargs)
+            stats.record(result)
+            return resolve_tracked_result(policy, result)
+
+        wrapper_any = cast(Any, async_wrapper)
+        wrapper_any.retry_stats = stats
+        wrapper_any.retry_policy = policy
+        wrapper_any.with_policy = with_policy
+        return async_wrapper
+
+    @wraps(function)
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        result = tracking_policy.run(function, *args, **kwargs)
+        stats.record(result)
+        return resolve_tracked_result(policy, result)
+
+    wrapper_any = cast(Any, sync_wrapper)
+    wrapper_any.retry_stats = stats
+    wrapper_any.retry_policy = policy
+    wrapper_any.with_policy = with_policy
+    return sync_wrapper

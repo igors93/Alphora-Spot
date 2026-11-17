@@ -1,0 +1,72 @@
+{
+  "stages": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "WARMUP",
+      "trace": [
+        {
+          "stage": "light_snapshot_score",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_manual_or_protection_status",
+          "status": "OK",
+          "terminal": false
+        },
+        {
+          "stage": "handle_warmup",
+          "status": "OK",
+          "terminal": true
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "symbol": "BTCUSDT",
+      "terminal_stage": "WARMUP",
+      "result": {
+        "stage": "WARMUP",
+        "classification": "observacao",
+        "reason": "Aguardando historico minimo para score RSI: 2/15",
+        "action": "",
+        "status": "WARMUP",
+        "terminal": true
+      },
+      "plan": null
+    }
+  ],
+  "commands": [],
+  "mutations": {
+    "new_order": [],
+    "new_algo_order": [],
+    "cancel_order": [],
+    "cancel_algo_order": []
+  },
+  "queries": {
+    "query_order": []
+  },
+  "exchange_state": {
+    "direction": "NONE",
+    "quantity": "0",
+    "entry_price": "0",
+    "open_algo_orders": []
+  },
+  "journal": [
+    {
+      "type": "governor_evaluate_symbol_flow_decision",
+      "payload": {
+        "cycle_id": "<id:1>",
+        "symbol_eval_id": "<id:2>",
+        "symbol": "BTCUSDT",
+        "stage": "WARMUP",
+        "classification": "observacao",
+        "reason": "Aguardando historico minimo para score RSI: 2/15",
+        "action": "",
+        "terminal": true,
+        "execution_will_run": false
+      }
+    }
+  ]
+}

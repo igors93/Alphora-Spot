@@ -1,0 +1,176 @@
+# ============================================================
+# Alphora — Python trading bot
+# Ignora arquivos locais, secretos, runtime, logs e artefatos
+# gerados automaticamente.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Python
+# ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*$py.class
+
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+*.egg-info/
+.eggs/
+build/
+dist/
+site/
+
+
+# ------------------------------------------------------------
+# Ambientes virtuais
+# ------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+
+# ------------------------------------------------------------
+# Variáveis de ambiente e segredos
+# ------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+*.secret
+secrets/
+credentials/
+credentials.json
+
+
+# ------------------------------------------------------------
+# Configurações locais do Alphora
+# ------------------------------------------------------------
+config/*.local.json
+
+
+# ------------------------------------------------------------
+# Runtime do robô
+# ------------------------------------------------------------
+runtime/
+!runtime/.gitkeep
+
+*.lock
+!/interface/Cargo.lock
+*.request
+
+
+# ------------------------------------------------------------
+# Logs
+# ------------------------------------------------------------
+logs/
+*.log
+*.log.*
+
+
+# ------------------------------------------------------------
+# Journals e eventos gerados em execução
+# ------------------------------------------------------------
+data/*.jsonl
+data/governor_events.jsonl
+data/scanner_scores.jsonl
+data/trades*.jsonl
+
+# Caso existam exemplos seguros, mantenha versionados
+!data/*.example.jsonl
+
+
+# ------------------------------------------------------------
+# Estados persistidos de execução
+# ------------------------------------------------------------
+state.json
+state_*.json
+governor_state.json
+runtime/*.json
+
+
+# ------------------------------------------------------------
+# Dados locais de backtest / mercado
+# ------------------------------------------------------------
+data/market/*.csv
+data/market/*.parquet
+data/market/*.feather
+reports/
+
+# Caso existam datasets pequenos de exemplo, mantenha versionados
+!data/market/*example*.csv
+!data/market/*sample*.csv
+
+
+# ------------------------------------------------------------
+# Banco local / cache / temporários
+# ------------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+.cache/
+tmp/
+temp/
+*.tmp
+
+
+# ------------------------------------------------------------
+# Desktop / empacotamento
+# ------------------------------------------------------------
+*.spec
+desktop.ini
+
+# PyInstaller
+*.manifest
+*.toc
+
+# Cargo / Rust
+/interface/target/
+
+
+# ------------------------------------------------------------
+# IDEs e editores
+# ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+
+
+# ------------------------------------------------------------
+# Sistema operacional
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+
+# ------------------------------------------------------------
+# Arquivos de backup
+# ------------------------------------------------------------
+*.bak
+*.backup
+*.old
+*.orig
+
+data/audit/
+
+# ------------------------------------------------------------
+# Modelos IA treinados localmente
+# ------------------------------------------------------------
+/models/ai/**
+!/models/ai/.gitkeep
+
+.ai/

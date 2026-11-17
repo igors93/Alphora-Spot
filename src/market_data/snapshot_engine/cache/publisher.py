@@ -1,0 +1,609 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator, Collection, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from enum import Enum
+from types import MappingProxyType
+from typing import Any, Generic, TypeVar, cast
+
+from market_data.snapshot_engine.concurrency.dispatch import run_bounded
+from market_data.snapshot_engine.core.authority import AuthorityPolicyResolver
+from market_data.snapshot_engine.core.errors import SourceProtocolError
+from market_data.snapshot_engine.core.health import OperationalHealthTracker
+from market_data.snapshot_engine.core.isolation import (
+    AsyncPayloadIsolator,
+    PayloadCopier,
+    PayloadIsolator,
+)
+from market_data.snapshot_engine.core.keys import ResourceKey
+from market_data.snapshot_engine.core.models import (
+    CacheLookup,
+    CacheWriteResult,
+    CacheWriteStatus,
+    FreshnessPolicy,
+    SnapshotValue,
+)
+from market_data.snapshot_engine.core.protocols import (
+    AsyncCache,
+    AtomicAsyncCache,
+    BatchAsyncCache,
+    BatchAtomicAsyncCache,
+    Clock,
+    EventSink,
+    FreshnessPolicyProvider,
+    MetricsSink,
+)
+from market_data.snapshot_engine.core.quality import ObservationPolicy, require_finite_timestamp
+from market_data.snapshot_engine.observability.labels import resource_metric_labels
+
+T = TypeVar("T")
+
+_DEFAULT_MAX_PENDING_TASKS = 8
+
+
+class PublishStatus(str, Enum):
+    PUBLISHED = "published"
+    IGNORED_LOWER_AUTHORITY = "ignored_lower_authority"
+    IGNORED_OLDER = "ignored_older"
+    IGNORED_DUPLICATE = "ignored_duplicate"
+
+
+@dataclass(frozen=True)
+class ResourceUpdate(Generic[T]):
+    """One event-driven resource update ready to enter the engine's read cache."""
+
+    key: ResourceKey
+    value: T
+    source: str
+    observed_at: float | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        normalized_source = str(self.source or "").strip()
+        if not normalized_source:
+            raise ValueError("source name cannot be empty")
+        object.__setattr__(self, "source", normalized_source)
+        if self.observed_at is not None:
+            object.__setattr__(
+                self,
+                "observed_at",
+                require_finite_timestamp(self.observed_at, name="observed_at"),
+            )
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True)
+class PublishResult:
+    """Outcome of one monotonic cache publication."""
+
+    status: PublishStatus
+    value: SnapshotValue[Any]
+    previous: SnapshotValue[Any] | None = None
+
+    @property
+    def published(self) -> bool:
+        return self.status is PublishStatus.PUBLISHED
+
+
+class ResourcePublisher:
+    """Publish event-stream or in-process state directly into a snapshot engine cache.
+
+    Publications are monotonic by ``observed_at`` by default. Bulk publication acquires striped
+    locks in a stable order and uses authoritative atomic cache operations when available.
+    """
+
+    def __init__(
+        self,
+        *,
+        cache: AsyncCache,
+        clock: Clock,
+        policy_resolver: FreshnessPolicyProvider,
+        metrics: MetricsSink,
+        events: EventSink,
+        observation_policy: ObservationPolicy | None = None,
+        lock_stripes: int = 64,
+        payload_copier: PayloadCopier | None = None,
+        payload_isolator: PayloadIsolator | None = None,
+        _async_payload_isolator: AsyncPayloadIsolator | None = None,
+        run_payload_copies_in_thread: bool | None = None,
+        max_copy_concurrency: int = 4,
+        authority_resolver: AuthorityPolicyResolver | None = None,
+        max_pending_tasks: int = _DEFAULT_MAX_PENDING_TASKS,
+        health_tracker: OperationalHealthTracker | None = None,
+    ) -> None:
+        if lock_stripes < 1:
+            raise ValueError("lock_stripes must be at least 1")
+        if max_pending_tasks < 1:
+            raise ValueError("max_pending_tasks must be at least 1")
+        if _async_payload_isolator is not None and (
+            run_payload_copies_in_thread is not None or max_copy_concurrency != 4
+        ):
+            raise ValueError("payload copy settings cannot be combined with async_payload_isolator")
+        self.cache = cache
+        self.clock = clock
+        self.policy_resolver = policy_resolver
+        self.metrics = metrics
+        self.events = events
+        self.observation_policy = observation_policy or ObservationPolicy()
+        self._payload_isolator = payload_isolator or PayloadIsolator(payload_copier)
+        self._owns_async_payload_isolator = _async_payload_isolator is None
+        self._async_payload_isolator = _async_payload_isolator or AsyncPayloadIsolator(
+            self._payload_isolator,
+            run_in_thread=run_payload_copies_in_thread,
+            max_concurrency=max_copy_concurrency,
+            component_name="publisher",
+        )
+        self.run_payload_copies_in_thread = self._async_payload_isolator.run_in_thread
+        self.max_copy_concurrency = self._async_payload_isolator.max_concurrency
+        self.authority_resolver = authority_resolver or AuthorityPolicyResolver()
+        self.max_pending_tasks = int(max_pending_tasks)
+        self.health_tracker = health_tracker
+        if self.authority_resolver.has_rules and not bool(
+            getattr(cache, "validates_source_authority", False)
+        ):
+            raise ValueError(
+                "authority policies require a cache that declares validates_source_authority = True"
+            )
+        self._locks = tuple(asyncio.Lock() for _ in range(lock_stripes))
+        self._all_values_policy = FreshnessPolicy(
+            ttl_seconds=float("inf"),
+            max_stale_seconds=float("inf"),
+        )
+
+    async def aclose(self, *, timeout_seconds: float | None = 5.0) -> None:
+        """Close a publisher-owned copy subsystem without closing a shared builder runner."""
+
+        if self._owns_async_payload_isolator:
+            await self._async_payload_isolator.aclose(timeout_seconds=timeout_seconds)
+
+    def _prepare_update_for_submission(
+        self,
+        update: ResourceUpdate[T],
+    ) -> ResourceUpdate[T]:
+        """Capture one update before it crosses a non-blocking thread boundary."""
+
+        return ResourceUpdate(
+            key=update.key,
+            value=self._payload_isolator.copy(
+                update.value,
+                context=f"non-blocking submission payload for {update.key}",
+            ),
+            source=update.source,
+            observed_at=update.observed_at,
+            metadata=self._payload_isolator.copy_metadata(
+                update.metadata,
+                context=f"non-blocking submission metadata for {update.key}",
+            ),
+        )
+
+    async def publish(
+        self,
+        key: ResourceKey,
+        value: Any,
+        *,
+        source: str,
+        observed_at: float | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        force: bool = False,
+        replace_equal: bool = False,
+    ) -> PublishResult:
+        return await self.publish_update(
+            ResourceUpdate(
+                key=key,
+                value=value,
+                source=source,
+                observed_at=observed_at,
+                metadata=metadata or {},
+            ),
+            force=force,
+            replace_equal=replace_equal,
+        )
+
+    async def publish_update(
+        self,
+        update: ResourceUpdate[Any],
+        *,
+        force: bool = False,
+        replace_equal: bool = False,
+    ) -> PublishResult:
+        results = await self.publish_many(
+            (update,),
+            force=force,
+            replace_equal=replace_equal,
+        )
+        return results[update.key]
+
+    async def publish_many(
+        self,
+        updates: Collection[ResourceUpdate[Any]],
+        *,
+        force: bool = False,
+        replace_equal: bool = False,
+    ) -> Mapping[ResourceKey, PublishResult]:
+        update_list = tuple(updates)
+        if not update_list:
+            return MappingProxyType({})
+
+        keys = tuple(dict.fromkeys(update.key for update in update_list))
+        async with self._locked_keys(keys):
+            now = self.clock.now()
+            unique: dict[ResourceKey, ResourceUpdate[Any]] = {}
+            effective_precedence: dict[ResourceKey, tuple[int, float]] = {}
+            for update in update_list:
+                observed_at = now if update.observed_at is None else float(update.observed_at)
+                self._validate_observed_at(update.key, observed_at, now=now)
+                authority_rank = self.authority_resolver.rank_for(update.key, update.source)
+                precedence = (authority_rank, observed_at)
+                previous_precedence = effective_precedence.get(update.key)
+                if previous_precedence is None or precedence >= previous_precedence:
+                    unique[update.key] = update
+                    effective_precedence[update.key] = precedence
+
+            previous_values = await self._get_existing(keys, now=now)
+            provisional_results: dict[ResourceKey, PublishResult] = {}
+            legacy_writes: list[SnapshotValue[Any]] = []
+
+            def prepare_candidate(
+                item: tuple[ResourceKey, ResourceUpdate[Any]],
+            ) -> tuple[ResourceKey, SnapshotValue[Any]]:
+                key, update = item
+                observed_at = now if update.observed_at is None else float(update.observed_at)
+                policy = self.policy_resolver.resolve(key)
+                future_seconds = max(0.0, observed_at - now)
+                published_metadata = {**update.metadata, "published": True}
+                if future_seconds > 0:
+                    published_metadata["clock_skew_seconds"] = future_seconds
+                return (
+                    key,
+                    SnapshotValue(
+                        key=key,
+                        value=self._payload_isolator.copy(
+                            update.value,
+                            context=f"published payload for {key}",
+                        ),
+                        source=update.source,
+                        observed_at=observed_at,
+                        fetched_at=now,
+                        age_seconds=max(0.0, now - observed_at),
+                        stale=max(0.0, now - observed_at) > policy.ttl_seconds,
+                        from_cache=False,
+                        latency_ms=0.0,
+                        attempts=0,
+                        authority_rank=self.authority_resolver.rank_for(key, update.source),
+                        metadata=self._payload_isolator.copy_metadata(
+                            published_metadata,
+                            context=f"published metadata for {key}",
+                        ),
+                    ),
+                )
+
+            candidate_items = await self._async_payload_isolator.map(
+                tuple(unique.items()),
+                prepare_candidate,
+            )
+            candidates_by_key = dict(candidate_items)
+            candidates = tuple(candidates_by_key[key] for key in unique)
+
+            for key in unique:
+                candidate = candidates_by_key[key]
+                previous = previous_values.get(key)
+
+                ignored_status = self._ignored_status(
+                    previous,
+                    candidate=candidate,
+                    force=force,
+                    replace_equal=replace_equal,
+                )
+                if ignored_status is not None and previous is not None:
+                    provisional_results[key] = PublishResult(
+                        status=ignored_status,
+                        value=previous,
+                        previous=previous,
+                    )
+                    continue
+
+                legacy_writes.append(candidate)
+                provisional_results[key] = PublishResult(
+                    status=PublishStatus.PUBLISHED,
+                    value=candidate,
+                    previous=previous,
+                )
+
+            atomic_results = await self._set_many_if_newer(
+                candidates,
+                force=force,
+                replace_equal=replace_equal,
+            )
+            if atomic_results is None:
+                await self._set_many_legacy(legacy_writes)
+                results = provisional_results
+            else:
+                missing = tuple(key for key in unique if key not in atomic_results)
+                if missing:
+                    rendered = ", ".join(str(key) for key in missing)
+                    raise RuntimeError(f"atomic cache omitted write results for: {rendered}")
+                copied_results = await self._async_payload_isolator.map(
+                    tuple((key, atomic_results[key]) for key in unique),
+                    lambda item: (
+                        item[0],
+                        self._publish_result_from_cache(item[1]),
+                    ),
+                )
+                results = dict(copied_results)
+
+            for key, result in results.items():
+                update = unique[key]
+                if result.published:
+                    self._record_published(result, update, force=force)
+                else:
+                    self._record_ignored(result, update)
+            return MappingProxyType(results)
+
+    async def invalidate(self, key: ResourceKey, *, reason: str = "") -> None:
+        await self.invalidate_many((key,), reason=reason)
+
+    async def invalidate_many(
+        self,
+        keys: Collection[ResourceKey],
+        *,
+        reason: str = "",
+    ) -> None:
+        unique = tuple(dict.fromkeys(keys))
+        if not unique:
+            return
+        async with self._locked_keys(unique):
+            if isinstance(self.cache, BatchAsyncCache):
+                await self.cache.invalidate_many(unique)
+            else:
+
+                async def invalidate_one(key: ResourceKey) -> None:
+                    await self.cache.invalidate(key)
+
+                await run_bounded(
+                    unique,
+                    invalidate_one,
+                    max_tasks=self.max_pending_tasks,
+                    health_tracker=self.health_tracker,
+                )
+        for key in unique:
+            self.metrics.increment(
+                "resource_invalidation_total",
+                **resource_metric_labels(key),
+            )
+            self.events.emit("resource_invalidated", resource=str(key), reason=reason)
+
+    async def _get_existing(
+        self,
+        keys: tuple[ResourceKey, ...],
+        *,
+        now: float,
+    ) -> dict[ResourceKey, SnapshotValue[Any] | None]:
+        policies = dict.fromkeys(keys, self._all_values_policy)
+        if isinstance(self.cache, BatchAsyncCache):
+            lookups = await self.cache.get_many(keys, now=now, policies=policies)
+        else:
+
+            async def read_one(key: ResourceKey) -> CacheLookup:
+                return await self.cache.get(
+                    key,
+                    now=now,
+                    policy=self._all_values_policy,
+                )
+
+            completed = await run_bounded(
+                keys,
+                read_one,
+                max_tasks=self.max_pending_tasks,
+                health_tracker=self.health_tracker,
+            )
+            lookups = dict(zip(keys, completed, strict=True))
+        copied = await self._async_payload_isolator.map(
+            tuple((key, lookups[key].value) for key in keys),
+            lambda item: (
+                item[0],
+                None
+                if item[1] is None
+                else self._payload_isolator.clone_snapshot_value(
+                    item[1],
+                    context=f"publisher cache read for {item[0]}",
+                ),
+            ),
+        )
+        return dict(copied)
+
+    async def _set_many_if_newer(
+        self,
+        values: Collection[SnapshotValue[Any]],
+        *,
+        force: bool,
+        replace_equal: bool,
+    ) -> Mapping[ResourceKey, CacheWriteResult] | None:
+        if not values:
+            return MappingProxyType({})
+        isolated = await self._async_payload_isolator.map(
+            tuple(values),
+            lambda value: self._payload_isolator.clone_snapshot_value(
+                value,
+                context=f"publisher cache write for {value.key}",
+            ),
+        )
+        if isinstance(self.cache, BatchAtomicAsyncCache):
+            return await self.cache.set_many_if_newer(
+                isolated,
+                force=force,
+                replace_equal=replace_equal,
+            )
+        if isinstance(self.cache, AtomicAsyncCache):
+            atomic_cache = self.cache
+
+            async def write_one(value: SnapshotValue[Any]) -> CacheWriteResult:
+                return await atomic_cache.set_if_newer(
+                    value,
+                    force=force,
+                    replace_equal=replace_equal,
+                )
+
+            completed = await run_bounded(
+                isolated,
+                write_one,
+                max_tasks=self.max_pending_tasks,
+                health_tracker=self.health_tracker,
+            )
+            return MappingProxyType({result.value.key: result for result in completed})
+        return None
+
+    async def _set_many_legacy(self, values: Collection[SnapshotValue[Any]]) -> None:
+        if not values:
+            return
+        isolated = await self._async_payload_isolator.map(
+            tuple(values),
+            lambda value: self._payload_isolator.clone_snapshot_value(
+                value,
+                context=f"publisher legacy cache write for {value.key}",
+            ),
+        )
+        if isinstance(self.cache, BatchAsyncCache):
+            await self.cache.set_many(isolated)
+        else:
+
+            async def write_one(value: SnapshotValue[Any]) -> None:
+                await self.cache.set(value)
+
+            await run_bounded(
+                isolated,
+                write_one,
+                max_tasks=self.max_pending_tasks,
+                health_tracker=self.health_tracker,
+            )
+
+    def _publish_result_from_cache(self, result: CacheWriteResult) -> PublishResult:
+        statuses = {
+            CacheWriteStatus.STORED: PublishStatus.PUBLISHED,
+            CacheWriteStatus.IGNORED_LOWER_AUTHORITY: PublishStatus.IGNORED_LOWER_AUTHORITY,
+            CacheWriteStatus.IGNORED_OLDER: PublishStatus.IGNORED_OLDER,
+            CacheWriteStatus.IGNORED_DUPLICATE: PublishStatus.IGNORED_DUPLICATE,
+        }
+        return PublishResult(
+            status=statuses[result.status],
+            value=self._payload_isolator.clone_snapshot_value(
+                result.value,
+                context=f"publisher result for {result.value.key}",
+            ),
+            previous=(
+                None
+                if result.previous is None
+                else self._payload_isolator.clone_snapshot_value(
+                    result.previous,
+                    context=f"publisher previous result for {result.previous.key}",
+                )
+            ),
+        )
+
+    def _validate_observed_at(
+        self,
+        key: ResourceKey,
+        observed_at: float,
+        *,
+        now: float,
+    ) -> None:
+        try:
+            normalized_observed_at = require_finite_timestamp(
+                observed_at,
+                name="observed_at",
+            )
+            normalized_now = require_finite_timestamp(now, name="current time")
+        except ValueError as error:
+            raise SourceProtocolError(
+                f"invalid published observation for {key}: {error}"
+            ) from error
+
+        future_seconds = normalized_observed_at - normalized_now
+        if (
+            future_seconds > self.observation_policy.future_tolerance_seconds
+            and self.observation_policy.reject_future_observations
+        ):
+            raise SourceProtocolError(
+                f"published observation for {key} is {future_seconds:.6f}s in the future"
+            )
+
+    @staticmethod
+    def _ignored_status(
+        previous: SnapshotValue[Any] | None,
+        *,
+        candidate: SnapshotValue[Any],
+        force: bool,
+        replace_equal: bool,
+    ) -> PublishStatus | None:
+        if force or previous is None:
+            return None
+        if candidate.authority_rank < previous.authority_rank:
+            return PublishStatus.IGNORED_LOWER_AUTHORITY
+        if candidate.authority_rank > previous.authority_rank:
+            return None
+        if previous.observed_at > candidate.observed_at:
+            return PublishStatus.IGNORED_OLDER
+        if previous.observed_at == candidate.observed_at and not replace_equal:
+            return PublishStatus.IGNORED_DUPLICATE
+        return None
+
+    def _record_published(
+        self,
+        result: PublishResult,
+        update: ResourceUpdate[Any],
+        *,
+        force: bool,
+    ) -> None:
+        self.metrics.increment(
+            "resource_publish_total",
+            status=PublishStatus.PUBLISHED.value,
+            source=update.source,
+            **resource_metric_labels(update.key),
+        )
+        self.events.emit(
+            "resource_published",
+            resource=str(update.key),
+            source=update.source,
+            observed_at=result.value.observed_at,
+            replaced=result.previous is not None,
+            forced=force,
+            authority_rank=result.value.authority_rank,
+        )
+
+    def _record_ignored(
+        self,
+        result: PublishResult,
+        update: ResourceUpdate[Any],
+    ) -> None:
+        previous = cast(SnapshotValue[Any], result.previous)
+        self.metrics.increment(
+            "resource_publish_total",
+            status=result.status.value,
+            source=update.source,
+            **resource_metric_labels(update.key),
+        )
+        self.events.emit(
+            "resource_publish_ignored",
+            resource=str(update.key),
+            source=update.source,
+            status=result.status.value,
+            observed_at=update.observed_at,
+            cached_observed_at=previous.observed_at,
+            candidate_authority_rank=self.authority_resolver.rank_for(update.key, update.source),
+            cached_authority_rank=previous.authority_rank,
+        )
+
+    @asynccontextmanager
+    async def _locked_keys(self, keys: Collection[ResourceKey]) -> AsyncIterator[None]:
+        indexes = sorted({hash(key) % len(self._locks) for key in keys})
+        acquired: list[asyncio.Lock] = []
+        try:
+            for index in indexes:
+                lock = self._locks[index]
+                await lock.acquire()
+                acquired.append(lock)
+            yield
+        finally:
+            for lock in reversed(acquired):
+                lock.release()

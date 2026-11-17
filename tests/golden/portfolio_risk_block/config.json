@@ -1,0 +1,7 @@
+{
+  "execution_mode": "TESTNET_LIVE",
+  "score": 95,
+  "score_action": "OPEN_LONG",
+  "score_reason": "ready",
+  "portfolio_settings": {"max_total_exposure_usdt": 10.0}
+}

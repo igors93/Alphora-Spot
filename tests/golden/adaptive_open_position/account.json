@@ -1,0 +1,17 @@
+{
+  "balance": "1000",
+  "position": {"direction": "LONG", "quantity": "0.5", "entry_price": "100"},
+  "open_orders": [],
+  "open_algo_orders": [
+    {
+      "symbol": "BTCUSDT", "algoId": 1001, "clientAlgoId": "ALPHORA_STOP_1",
+      "orderType": "STOP_MARKET", "side": "SELL", "triggerPrice": "99",
+      "closePosition": "true", "workingType": "MARK_PRICE", "algoStatus": "NEW"
+    },
+    {
+      "symbol": "BTCUSDT", "algoId": 1002, "clientAlgoId": "ALPHORA_TAKE_1",
+      "orderType": "TAKE_PROFIT_MARKET", "side": "SELL", "triggerPrice": "102",
+      "closePosition": "true", "workingType": "MARK_PRICE", "algoStatus": "NEW"
+    }
+  ]
+}

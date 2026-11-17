@@ -1,0 +1,7 @@
+{
+  "execution_mode": "TESTNET_LIVE",
+  "score": 95,
+  "score_action": "OPEN_LONG",
+  "score_reason": "ready",
+  "factory": {"dynamic_sizing_enabled": true, "dynamic_exit_enabled": true}
+}

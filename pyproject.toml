@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alphora"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.34.2",
+    "python-dotenv>=1.2.4",
+    "websocket-client>=1.9.2",
+    "logprivacy>=0.6.0,<0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "mypy>=2.4.1",
+    "build>=1.6.1",
+    "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.148",
+]
+
+[project.scripts]
+alphora-engine = "engine:run"
+alphora-research = "research.cli:main"
+alphora-backtest = "backtesting.adapters.cli:main"
+
+[tool.setuptools]
+py-modules = ["engine", "module_paths", "operational_module_modes", "trading_cadence"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+include = ["backtesting*", "binance*", "config*", "desktop*", "domain*", "execution*", "futures*", "governor*", "indicators*", "market_data*", "observability*", "ops*", "research*", "resilience*", "scanner*", "strategies*", "trading*", "utils*"]
+
+[tool.setuptools.package-data]
+"market_data.snapshot_engine" = ["py.typed"]
+"resilience.retry_engine" = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", ".", "tests"]
+addopts = ["--import-mode=importlib"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["release_concurrency: deterministic concurrency regressions required for releases"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+explicit_package_bases = true
+
+# Typed evaluation pipeline (migration M3) and operational snapshot provider (M5): the
+# context, the stage runner, the stage objects and the market data every stage reads are
+# checked strictly so the financial path is not hidden by Any.
+[[tool.mypy.overrides]]
+module = [
+    "governor.symbol_evaluation_pipeline",
+    "governor.evaluation.*",
+    "governor.stages.*",
+    "governor.services.*",
+    "governor.cycle.*",
+    "governor.alphora_governor",
+    "governor.composition",
+    "market_data.snapshot_provider.*",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_generics = true
+check_untyped_defs = true
+warn_return_any = true
+no_implicit_reexport = true
