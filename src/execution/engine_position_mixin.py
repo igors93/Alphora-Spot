@@ -70,6 +70,8 @@ class EnginePositionMixin(EngineMixinHost):
         planned_quantity: Decimal | None,
         trade_plan_id: str | None,
     ) -> tuple[Decimal, str, str] | PositionExecutionResult:
+        if self.paused:
+            return PositionExecutionResult.blocked("ENGINE_PAUSED_RECONCILIATION_REQUIRED")
         if getattr(self.client, "spot_mode", False) and action is TradeAction.OPEN_SHORT:
             return PositionExecutionResult.blocked("SPOT_OPEN_SHORT_FORBIDDEN")
         if self.config.mutations_enabled:

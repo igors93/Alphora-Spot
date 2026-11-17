@@ -51,6 +51,34 @@ class EngineExchangeMixin(EngineMixinHost):
     def _recover_state_on_boot(self) -> None:
         self.logger.info("Starting state recovery on boot")
 
+        spot_history = None
+        if getattr(self.client, "spot_mode", False):
+            try:
+                spot_history = self.client.reconcile_spot_history(self.config.symbol)
+            except Exception as error:
+                self._pause_engine("spot_history_reconciliation_failed", error=str(error))
+                return
+            if self.runtime_state is not None:
+                owned = Decimal(spot_history["owned_quantity"])
+                if owned <= 0 and not any(
+                    client_id in spot_history["filled_sells"]
+                    for client_id in (
+                        self.runtime_state.stop_client_algo_id,
+                        self.runtime_state.take_client_algo_id,
+                    ) if client_id
+                ):
+                    self._pause_engine(
+                        "spot_local_state_without_confirmed_bot_sale",
+                        history=spot_history,
+                    )
+                    return
+                if owned > 0 and owned != self.runtime_state.quantity:
+                    self._pause_engine(
+                        "spot_local_exchange_quantity_mismatch", history=spot_history,
+                        local_quantity=str(self.runtime_state.quantity),
+                    )
+                    return
+
         if self.config.mutations_enabled:
             if not self._recover_pending_close_intent():
                 return
@@ -58,6 +86,9 @@ class EngineExchangeMixin(EngineMixinHost):
                 return
 
         position = self._get_position()
+        if getattr(self.client, "spot_mode", False) and position.is_open and position.entry_price <= 0:
+            self._pause_engine("spot_entry_cost_unavailable", history=spot_history)
+            return
         normal_result = self._safe_get_open_orders()
         algo_result = self._safe_get_open_algo_orders()
 
@@ -73,6 +104,16 @@ class EngineExchangeMixin(EngineMixinHost):
         algo_orders = algo_result.orders
         robot_normal_orders = self._filter_robot_normal_orders(normal_orders)
         robot_algo_orders = self._filter_robot_algo_orders(algo_orders)
+
+        if (
+            getattr(self.client, "spot_mode", False)
+            and position.is_open
+            and self.runtime_state is None
+            and not robot_algo_orders
+            and self.entry_intent_store.load() is None
+        ):
+            self._pause_engine("spot_position_without_state_or_protection", history=spot_history)
+            return
 
         self.logger.info(
             "Recovery snapshot | position=%s | qty=%s | normal_orders=%s | algo_orders=%s | "
@@ -102,6 +143,12 @@ class EngineExchangeMixin(EngineMixinHost):
             robot_algo_orders=robot_algo_orders,
             stage="RECOVERY_BOOT",
         )
+        if (
+            getattr(self.client, "spot_mode", False)
+            and reconciliation_decision is not None
+            and reconciliation_decision.should_block_new_entries
+        ):
+            self._pause_engine("spot_reconciliation_divergent", decision=reconciliation_decision.to_dict())
 
         if position.is_open:
             recovered_position = self._attach_or_create_state_for_open_position(position)

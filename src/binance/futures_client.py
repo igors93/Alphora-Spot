@@ -436,6 +436,48 @@ class BinanceFuturesClient:
             return normalized
         return response
 
+    def reconcile_spot_history(self, symbol: str) -> dict[str, Any]:
+        if not self.spot_mode:
+            raise ValueError("Historico Spot indisponivel em Futures")
+        orders = self._signed_request(
+            "GET", "/api/v3/allOrders", params={"symbol": symbol, "limit": 1000},
+        )
+        bot_orders = [
+            order for order in orders
+            if self._is_spot_bot_order_id(str(order.get("clientOrderId") or ""))
+        ]
+        bot_order_ids = {str(order.get("orderId")) for order in bot_orders}
+        trades_by_order: dict[str, list[dict[str, Any]]] = {}
+        if bot_order_ids:
+            trades = self._signed_request(
+                "GET", "/api/v3/myTrades", params={"symbol": symbol, "limit": 1000},
+            )
+            for trade in trades:
+                order_id = str(trade.get("orderId"))
+                if order_id in bot_order_ids:
+                    trades_by_order.setdefault(order_id, []).append(trade)
+        for order in sorted(bot_orders, key=lambda item: (item.get("time", 0), item.get("orderId", 0))):
+            self._record_spot_order_progress(self._normalize_spot_order_response(order))
+            for trade in trades_by_order.get(str(order.get("orderId")), []):
+                self.spot_holdings.record_fee(
+                    symbol=symbol,
+                    side="BUY" if trade.get("isBuyer") else "SELL",
+                    order_id=order_id,
+                    trade_id=str(trade.get("id") or ""),
+                    asset=str(trade.get("commissionAsset") or "").upper(),
+                    amount=Decimal(str(trade.get("commission", "0") or "0")),
+                )
+        self.account_info()
+        return {
+            "bot_orders": len(bot_orders),
+            "filled_sells": [
+                str(order.get("clientOrderId")) for order in bot_orders
+                if order.get("side") == "SELL" and Decimal(str(order.get("executedQty", "0"))) > 0
+            ],
+            "owned_quantity": str(self.spot_holdings.quantity(symbol)),
+            "average_cost": str(self.spot_holdings.average_cost(symbol)),
+        }
+
     def query_algo_order(
         self,
         algo_id: int | str | None = None,
@@ -800,6 +842,8 @@ class BinanceFuturesClient:
                 base_asset, (Decimal("0"), Decimal("0"))
             )
             total_qty = min(free_qty + locked_qty, self.spot_holdings.quantity(sym))
+            if self.spot_holdings.quantity(sym) > free_qty + locked_qty:
+                raise ValueError(f"Divergencia Spot: saldo {sym} menor que quantidade do bot")
             if total_qty <= 0:
                 with self._spot_state_lock:
                     self._spot_entry_prices.pop(sym, None)

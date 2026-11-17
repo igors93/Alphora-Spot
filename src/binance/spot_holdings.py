@@ -49,11 +49,12 @@ class SpotHoldingsStore:
 
     def net_buy_quantity(self, symbol: str, order_id: str, gross_quantity: Decimal) -> Decimal:
         base_asset = symbol.removesuffix("USDT")
+        prefix = f"{symbol}:{order_id}:"
         with self._lock:
             base_fees = sum(
                 (
                     Decimal(fee["amount"]) for key, fee in self.fees.items()
-                    if key.startswith(f"{order_id}:") and fee["asset"] == base_asset
+                    if key.startswith(prefix) and fee["asset"] == base_asset
                 ),
                 Decimal("0"),
             )
@@ -64,8 +65,9 @@ class SpotHoldingsStore:
         quote_quantity: Decimal = Decimal("0"),
     ) -> Decimal:
         with self._lock:
-            previous = self.order_fills.get(order_id, Decimal("0"))
-            previous_quote = self.order_quotes.get(order_id, Decimal("0"))
+            order_key = f"{symbol}:{order_id}"
+            previous = self.order_fills.get(order_key, Decimal("0"))
+            previous_quote = self.order_quotes.get(order_key, Decimal("0"))
             delta = max(Decimal("0"), executed_quantity - previous)
             quote_delta = max(Decimal("0"), quote_quantity - previous_quote)
             if delta <= 0 and quote_delta <= 0:
@@ -81,8 +83,8 @@ class SpotHoldingsStore:
                     self.costs[symbol] = self.costs.get(symbol, Decimal("0")) * remaining / owned
             else:
                 return Decimal("0")
-            self.order_fills[order_id] = max(previous, executed_quantity)
-            self.order_quotes[order_id] = max(previous_quote, quote_quantity)
+            self.order_fills[order_key] = max(previous, executed_quantity)
+            self.order_quotes[order_key] = max(previous_quote, quote_quantity)
             self.executions.append({
                 "symbol": symbol, "side": side, "order_id": order_id,
                 "quantity": str(delta), "quote_quantity": str(quote_delta),
@@ -96,7 +98,7 @@ class SpotHoldingsStore:
     ) -> None:
         if not trade_id or amount <= 0:
             return
-        fee_key = f"{order_id}:{trade_id}"
+        fee_key = f"{symbol}:{order_id}:{trade_id}"
         with self._lock:
             if fee_key in self.fees:
                 return
