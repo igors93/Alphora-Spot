@@ -49,16 +49,30 @@ def _validate_connection(config: AppConfig) -> None:
         raise ValueError("BINANCE_FUTURES_BASE_URL precisa comecar com https://")
 
     host = urlparse(config.base_url).netloc.lower()
-    if os.getenv("ALPHORA_MARKET_TYPE", "").strip().upper() == "SPOT" and (
-        "fapi" in host or "binancefuture" in host
-    ):
-        raise ValueError("ALPHORA_MARKET_TYPE=SPOT exige URL da API Spot")
+    from binance.futures_client import FUTURES_HOSTS, SPOT_HOSTS
+
+    if config.market_type not in {"SPOT", "FUTURES"}:
+        raise ValueError("market_type deve ser SPOT ou FUTURES")
+    if host in SPOT_HOSTS and config.market_type != "SPOT":
+        raise ValueError("Endpoint Spot exige market_type=SPOT")
+    if host in FUTURES_HOSTS and config.market_type != "FUTURES":
+        raise ValueError("Endpoint Futures exige market_type=FUTURES")
+    if host not in SPOT_HOSTS | FUTURES_HOSTS and not config.allow_custom_binance_host:
+        raise ValueError("Host Binance desconhecido exige ALPHORA_ALLOW_CUSTOM_BINANCE_HOST=true")
+    if config.environment.value == "TESTNET" and host in {
+        "api.binance.com", "fapi.binance.com",
+    }:
+        raise ValueError("TESTNET nao pode usar endpoint real")
+    if config.environment.value == "REAL" and host in {
+        "testnet.binance.vision", "demo-fapi.binance.com", "testnet.binancefuture.com",
+    }:
+        raise ValueError("REAL nao pode usar endpoint testnet")
 
     if not config.api_key:
-        raise ValueError(_missing_credential_message("BINANCE_FUTURES_API_KEY", config))
+        raise ValueError(_missing_credential_message(f"BINANCE_{config.market_type}_API_KEY", config))
 
     if not config.api_secret:
-        raise ValueError(_missing_credential_message("BINANCE_FUTURES_API_SECRET", config))
+        raise ValueError(_missing_credential_message(f"BINANCE_{config.market_type}_API_SECRET", config))
 
     if config.market_ws_enabled:
         if not config.market_ws_base_url.startswith("wss://"):
@@ -108,9 +122,7 @@ def _validate_symbols_and_sizing(config: AppConfig) -> None:
     if config.leverage > 5:
         raise ValueError("Por seguranca, esta versao limita a alavancagem a no maximo 5x")
 
-    if urlparse(config.base_url).netloc.lower() in {
-        "api.binance.com", "testnet.binance.vision"
-    }:
+    if config.market_type == "SPOT":
         if config.leverage != 1:
             raise ValueError("Spot exige ALPHORA_LEVERAGE=1")
         if (

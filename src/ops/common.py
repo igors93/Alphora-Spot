@@ -34,6 +34,8 @@ def make_client(config: AppConfig, *, mutation_enabled: bool = False) -> Binance
             Path(config.runtime_dir) / f"spot_holdings_{config.environment_key}.json"
         ),
         bot_order_prefix=config.bot_order_prefix,
+        market_type=config.market_type,
+        allow_custom_host=config.allow_custom_binance_host,
     )
 
 

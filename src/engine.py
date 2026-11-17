@@ -64,6 +64,8 @@ def main() -> None:
                 Path(config.runtime_dir) / f"spot_holdings_{config.environment_key}.json"
             ),
             bot_order_prefix=config.bot_order_prefix,
+            market_type=config.market_type,
+            allow_custom_host=config.allow_custom_binance_host,
         )
         governor = AlphoraGovernor.from_config(config, client)
         effective_symbols = [item.symbol for item in getattr(governor, "symbol_configs", [])]

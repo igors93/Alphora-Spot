@@ -281,6 +281,8 @@ class AppConfig:
     snapshot_evaluation_max_age_seconds: float = 45.0
     # The .env file load_config() read ("" when none); reported at startup.
     env_file: str = ""
+    market_type: str = "FUTURES"
+    allow_custom_binance_host: bool = False
     # Anti-HFT: per-symbol minimum spacing between new entries (floor 60s).
     min_seconds_between_entries: float = DEFAULT_MIN_SECONDS_BETWEEN_ENTRIES
 

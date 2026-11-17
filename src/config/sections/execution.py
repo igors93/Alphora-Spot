@@ -26,6 +26,8 @@ SPOT_REAL_BASE_URL = "https://api.binance.com"
 
 
 class ExecutionFields(TypedDict):
+    market_type: str
+    allow_custom_binance_host: bool
     execution_mode: ExecutionMode
     environment: ExchangeEnvironment
     use_testnet: bool
@@ -66,7 +68,12 @@ def load_execution_fields() -> ExecutionFields:
         legacy_execute_orders=legacy_execute_orders,
     )
     environment = load_environment(execution_mode, legacy_use_testnet)
+    market_type = _get_env("ALPHORA_MARKET_TYPE", "SPOT").upper().strip()
+    if market_type not in {"SPOT", "FUTURES"}:
+        raise ValueError("ALPHORA_MARKET_TYPE deve ser SPOT ou FUTURES")
     return {
+        "market_type": market_type,
+        "allow_custom_binance_host": _get_bool("ALPHORA_ALLOW_CUSTOM_BINANCE_HOST", False),
         "execution_mode": execution_mode,
         "environment": environment,
         "use_testnet": environment is ExchangeEnvironment.TESTNET,
@@ -76,16 +83,16 @@ def load_execution_fields() -> ExecutionFields:
             "ALPHORA_ALLOW_REAL_USER_DATA_CACHE_ASSISTED",
             False,
         ),
-        "base_url": _base_url(environment),
+        "base_url": _base_url(environment, market_type),
         "api_key": (
-            _get_env("BINANCE_SPOT_API_KEY", "")
-            or _get_env("BINANCE_API_KEY", "")
-            or _get_env("BINANCE_FUTURES_API_KEY", "")
+            (_get_env("BINANCE_SPOT_API_KEY", "") or _get_env("BINANCE_API_KEY", ""))
+            if market_type == "SPOT"
+            else (_get_env("BINANCE_FUTURES_API_KEY", "") or _get_env("BINANCE_API_KEY", ""))
         ),
         "api_secret": (
-            _get_env("BINANCE_SPOT_API_SECRET", "")
-            or _get_env("BINANCE_API_SECRET", "")
-            or _get_env("BINANCE_FUTURES_API_SECRET", "")
+            (_get_env("BINANCE_SPOT_API_SECRET", "") or _get_env("BINANCE_API_SECRET", ""))
+            if market_type == "SPOT"
+            else (_get_env("BINANCE_FUTURES_API_SECRET", "") or _get_env("BINANCE_API_SECRET", ""))
         ),
         "bot_order_prefix": _get_env("ALPHORA_BOT_ORDER_PREFIX", "ALPHORA"),
         "cancel_open_orders_when_flat": _get_bool("ALPHORA_CANCEL_OPEN_ORDERS_WHEN_FLAT", True),
@@ -242,15 +249,14 @@ def load_environment(
     return ExchangeEnvironment.TESTNET if legacy_use_testnet else ExchangeEnvironment.REAL
 
 
-def _base_url(environment: ExchangeEnvironment) -> str:
+def _base_url(environment: ExchangeEnvironment, market_type: str) -> str:
     configured_base_url = (
-        _get_env("BINANCE_SPOT_BASE_URL", "")
+        (_get_env("BINANCE_SPOT_BASE_URL", "") if market_type == "SPOT"
+         else _get_env("BINANCE_FUTURES_BASE_URL", ""))
         or _get_env("BINANCE_BASE_URL", "")
-        or _get_env("BINANCE_FUTURES_BASE_URL", "")
     )
     if configured_base_url:
         return configured_base_url
-    market_type = _get_env("ALPHORA_MARKET_TYPE", "").upper().strip()
     if market_type == "SPOT":
         if environment is ExchangeEnvironment.TESTNET:
             return SPOT_TESTNET_BASE_URL

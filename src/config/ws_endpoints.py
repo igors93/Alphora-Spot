@@ -1,4 +1,3 @@
-import os
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,7 +15,7 @@ def resolve_public_market_ws_base_url(config: Any) -> str:
     base_url = str(getattr(config, "base_url", "") or "").strip()
     host = urlparse(base_url).netloc.lower()
     environment = getattr(getattr(config, "environment", None), "value", "")
-    market_type = os.getenv("ALPHORA_MARKET_TYPE", "").strip().upper()
+    market_type = str(getattr(config, "market_type", "FUTURES")).upper()
 
     if host in {"api.binance.com", "testnet.binance.vision"} or market_type == "SPOT":
         if host == "api.binance.com" or (

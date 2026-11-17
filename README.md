@@ -292,7 +292,10 @@ Key variables:
 
 | Variable | Description |
 |---|---|
-| `BINANCE_FUTURES_API_KEY` / `BINANCE_FUTURES_API_SECRET` | Binance USDⓈ-M Futures credentials (required in every mode) |
+| `ALPHORA_MARKET_TYPE` | `SPOT` (default) or `FUTURES`; must match the REST endpoint |
+| `BINANCE_SPOT_API_KEY` / `BINANCE_SPOT_API_SECRET` | Spot credentials; Futures keys are never used as fallback |
+| `BINANCE_FUTURES_API_KEY` / `BINANCE_FUTURES_API_SECRET` | Futures credentials when `ALPHORA_MARKET_TYPE=FUTURES` |
+| `ALPHORA_ALLOW_CUSTOM_BINANCE_HOST` | Explicit opt-in for an unknown HTTPS host |
 | `ALPHORA_EXECUTION_MODE` | `DRY_RUN`, `PAPER_LIVE`, `TESTNET_LIVE` or `REAL_LIVE` |
 | `ALPHORA_ENVIRONMENT` | `TESTNET` or `REAL` for `DRY_RUN`/`PAPER_LIVE`; forced by `TESTNET_LIVE`/`REAL_LIVE` |
 | `ALPHORA_SYMBOL` / `ALPHORA_SYMBOLS` | Single symbol, or a comma-separated list (e.g. `BTCUSDT,ETHUSDT`) |

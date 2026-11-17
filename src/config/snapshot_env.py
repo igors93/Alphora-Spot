@@ -114,7 +114,7 @@ def load_snapshot_fallback_allowed() -> bool | None:
 def load_candle_klines_url() -> str:
     raw = os.getenv(CANDLE_KLINES_URL_ENV)
     if raw is None or not raw.strip():
-        if os.getenv("ALPHORA_MARKET_TYPE", "").strip().upper() == "SPOT":
+        if os.getenv("ALPHORA_MARKET_TYPE", "SPOT").strip().upper() == "SPOT":
             return DEFAULT_SPOT_CANDLE_KLINES_URL
         return DEFAULT_CANDLE_KLINES_URL
     return raw.strip()

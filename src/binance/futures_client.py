@@ -33,6 +33,13 @@ _CLOCK_SKEW_CRITICAL_MS = 10_000  # 10 s — almost certainly misconfigured NTP
 # order delayed in transit execute long after the decision that produced it.
 # Clock skew is handled by sync_time()/-1021 resync, not by a wider window.
 DEFAULT_RECV_WINDOW_MS = 10_000
+SPOT_HOSTS = frozenset({
+    "api.binance.com", "api-gcp.binance.com", "api1.binance.com", "api2.binance.com",
+    "api3.binance.com", "api4.binance.com", "testnet.binance.vision",
+})
+FUTURES_HOSTS = frozenset({
+    "fapi.binance.com", "demo-fapi.binance.com", "testnet.binancefuture.com",
+})
 
 
 # HTTP statuses where a Binance request may succeed if repeated (at the cycle level). 418 and
@@ -87,6 +94,8 @@ class BinanceFuturesClient:
         spot_mode: bool | None = None,
         spot_holdings_path: str | None = None,
         bot_order_prefix: str = "ALPHORA",
+        market_type: str | None = None,
+        allow_custom_host: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -100,11 +109,28 @@ class BinanceFuturesClient:
         self._time_sync_generation = 0
         self.rest_weight = rest_weight or shared_rest_weight_ledger()
         self._host = host_of(self.base_url)
-        if spot_mode is None:
-            lowered_host = self._host.lower()
-            self.spot_mode = not ("fapi" in lowered_host or "binancefuture" in lowered_host)
-        else:
-            self.spot_mode = bool(spot_mode)
+        if market_type is None:
+            if spot_mode is not None:
+                market_type = "SPOT" if spot_mode else "FUTURES"
+            elif self._host in SPOT_HOSTS:
+                market_type = "SPOT"
+            elif self._host in FUTURES_HOSTS:
+                market_type = "FUTURES"
+            else:
+                raise ValueError("market_type explicito obrigatorio para host desconhecido")
+        market_type = market_type.upper().strip()
+        if market_type not in {"SPOT", "FUTURES"}:
+            raise ValueError("market_type deve ser SPOT ou FUTURES")
+        if spot_mode is not None and spot_mode != (market_type == "SPOT"):
+            raise ValueError("spot_mode diverge de market_type")
+        if self._host in SPOT_HOSTS and market_type != "SPOT":
+            raise ValueError("Endpoint Spot com market_type Futures")
+        if self._host in FUTURES_HOSTS and market_type != "FUTURES":
+            raise ValueError("Endpoint Futures com market_type Spot")
+        if self._host not in SPOT_HOSTS | FUTURES_HOSTS and not allow_custom_host:
+            raise ValueError("Host Binance desconhecido exige autorizacao explicita")
+        self.market_type = market_type
+        self.spot_mode = market_type == "SPOT"
         self._spot_state_lock = threading.RLock()
         self._spot_balances: dict[str, tuple[Decimal, Decimal]] = {}
         self._spot_entry_prices: dict[str, Decimal] = {}
