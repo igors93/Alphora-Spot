@@ -286,11 +286,16 @@ class EngineOrderMixin(EngineMixinHost):
                 expected_direction = (
                     PositionDirection.LONG if pending.side == "BUY" else PositionDirection.SHORT
                 )
+                net_quantity = executed_quantity
+                if getattr(self.client, "spot_mode", False):
+                    net_quantity = self.client.spot_net_buy_quantity(
+                        self.config.symbol, str(order.get("orderId") or ""), executed_quantity,
+                    )
                 if (
                     not executed_quantity.is_finite()
                     or executed_quantity <= 0
                     or executed_quantity > pending.quantity
-                    or position.quantity != executed_quantity
+                    or position.quantity != net_quantity
                     or position.direction is not expected_direction
                     or (order_status == "FILLED" and executed_quantity != pending.quantity)
                 ):
@@ -597,7 +602,15 @@ class EngineOrderMixin(EngineMixinHost):
             PositionDirection.LONG if action == TradeAction.OPEN_LONG else PositionDirection.SHORT
         )
 
-        if position.is_open and position.direction == expected_direction:
+        status = str((order_response or {}).get("status") or "").upper()
+        executed_quantity = Decimal(str((order_response or {}).get("executedQty") or "0"))
+        if (
+            order_response is not None
+            and status in {"FILLED", "PARTIALLY_FILLED", "NEW", "CANCELED", "EXPIRED"}
+            and executed_quantity > 0
+            and position.is_open
+            and position.direction == expected_direction
+        ):
             self._record_journal(
                 "entry_order_reconciled",
                 trade_id=trade_id,
@@ -605,7 +618,7 @@ class EngineOrderMixin(EngineMixinHost):
                 order_response=order_response,
                 original_error=str(error.original_error),
             )
-            return position, order_response or {"unknown_status_reconciled": True}
+            return position, order_response
 
         if order_response is not None and _order_is_terminal_without_fill(order_response):
             self._record_journal(

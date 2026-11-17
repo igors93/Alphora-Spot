@@ -47,6 +47,18 @@ class SpotHoldingsStore:
             cost = self.costs.get(symbol, Decimal("0"))
             return cost / quantity if quantity > 0 and cost > 0 else Decimal("0")
 
+    def net_buy_quantity(self, symbol: str, order_id: str, gross_quantity: Decimal) -> Decimal:
+        base_asset = symbol.removesuffix("USDT")
+        with self._lock:
+            base_fees = sum(
+                (
+                    Decimal(fee["amount"]) for key, fee in self.fees.items()
+                    if key.startswith(f"{order_id}:") and fee["asset"] == base_asset
+                ),
+                Decimal("0"),
+            )
+        return max(Decimal("0"), gross_quantity - base_fees)
+
     def record_order_fill(
         self, *, symbol: str, side: str, order_id: str, executed_quantity: Decimal,
         quote_quantity: Decimal = Decimal("0"),

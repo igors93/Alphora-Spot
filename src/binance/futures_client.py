@@ -827,7 +827,7 @@ class BinanceFuturesClient:
             if free_qty < requested_qty:
                 clean_params["quantity"] = str(free_qty.normalize())
 
-        clean_params.setdefault("newOrderRespType", "FULL")
+        clean_params["newOrderRespType"] = "FULL"
         response = self._signed_request(
             "POST",
             "/api/v3/order",
@@ -893,6 +893,9 @@ class BinanceFuturesClient:
 
     def _is_spot_bot_order_id(self, client_id: str) -> bool:
         return any(client_id.startswith(f"{prefix}_") for prefix in self.bot_order_prefixes)
+
+    def spot_net_buy_quantity(self, symbol: str, order_id: str, gross: Decimal) -> Decimal:
+        return self.spot_holdings.net_buy_quantity(symbol, order_id, gross)
 
     @staticmethod
     def _normalize_spot_order_response(

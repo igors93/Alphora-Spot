@@ -347,10 +347,13 @@ def _apply_safe_repairs(
     for order in snapshot.robot_algo_orders:
         attempted += 1
         try:
-            repair_client.cancel_algo_order(
-                algo_id=order.get("algoId"),
-                client_algo_id=_algo_client_id(order) or None,
-            )
+            cancel_params = {
+                "algo_id": order.get("algoId"),
+                "client_algo_id": _algo_client_id(order) or None,
+            }
+            if getattr(repair_client, "spot_mode", False):
+                cancel_params["symbol"] = snapshot.symbol
+            repair_client.cancel_algo_order(**cancel_params)
             succeeded += 1
         except Exception as error:  # pragma: no cover
             errors.append(str(error))

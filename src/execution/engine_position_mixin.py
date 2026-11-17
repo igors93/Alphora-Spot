@@ -266,11 +266,16 @@ class EnginePositionMixin(EngineMixinHost):
         expected_direction = (
             PositionDirection.LONG if action is TradeAction.OPEN_LONG else PositionDirection.SHORT
         )
+        net_quantity = executed_quantity
+        if getattr(self.client, "spot_mode", False):
+            net_quantity = self.client.spot_net_buy_quantity(
+                self.config.symbol, str(entry_order.get("orderId") or ""), executed_quantity,
+            )
         if (
             not position.is_open
             or position.direction is not expected_direction
             or not executed_quantity.is_finite()
-            or executed_quantity != position.quantity
+            or net_quantity != position.quantity
             or executed_quantity > quantity
             or (
                 str(entry_order.get("status") or "").upper() == "FILLED"
@@ -460,7 +465,8 @@ class EnginePositionMixin(EngineMixinHost):
 
         if self.config.mutations_enabled:
             fill_state = (
-                OrderState.PARTIALLY_FILLED if position.quantity < quantity else OrderState.FILLED
+                OrderState.FILLED if str(order_response.get("status") or "").upper() == "FILLED"
+                else OrderState.PARTIALLY_FILLED
             )
             if not self._advance_entry_intent(fill_state):
                 return PositionExecutionResult.uncertain(
