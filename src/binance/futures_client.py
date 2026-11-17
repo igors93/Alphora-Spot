@@ -674,7 +674,35 @@ class BinanceFuturesClient:
             enriched["assets"] = assets
         usdt_free, usdt_locked = parsed_balances.get("USDT", (Decimal("0"), Decimal("0")))
         enriched.setdefault("availableBalance", str(usdt_free))
-        enriched.setdefault("totalWalletBalance", str(usdt_free + usdt_locked))
+        prices: dict[str, Decimal] = {}
+        unpriced: list[str] = []
+        non_usdt = [
+            asset for asset, (free, locked) in parsed_balances.items()
+            if asset != "USDT" and free + locked > 0
+        ]
+        if non_usdt:
+            ticker_rows = self._public_request("GET", "/api/v3/ticker/price")
+            price_by_symbol = {
+                str(row.get("symbol", "")): Decimal(str(row.get("price", "0")))
+                for row in ticker_rows if isinstance(row, dict)
+            }
+            for asset in non_usdt:
+                direct = price_by_symbol.get(f"{asset}USDT", Decimal("0"))
+                inverse = price_by_symbol.get(f"USDT{asset}", Decimal("0"))
+                price = direct if direct > 0 else (Decimal("1") / inverse if inverse > 0 else Decimal("0"))
+                if price > 0:
+                    prices[asset] = price
+                else:
+                    unpriced.append(asset)
+        equity = usdt_free + usdt_locked
+        for asset, price in prices.items():
+            free, locked = parsed_balances[asset]
+            equity += (free + locked) * price
+        enriched["totalWalletBalance"] = str(equity)
+        enriched["spotEquityUSDT"] = str(equity)
+        enriched["spotEquityComplete"] = not unpriced
+        enriched["spotUnpricedAssets"] = unpriced
+        enriched["spotAssetPricesUSDT"] = {asset: str(price) for asset, price in prices.items()}
         return enriched
 
     def _spot_position_risk(

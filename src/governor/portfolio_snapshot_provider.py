@@ -79,11 +79,29 @@ class PortfolioSnapshotProvider:
 
         account_info = self.account_info(context=context)
 
+        spot_equity = None
+        if account_info is not None and "spotEquityUSDT" in account_info:
+            if not account_info.get("spotEquityComplete", False):
+                account_snapshot["account_info_failed"] = True
+                account_snapshot["account_info_error"] = (
+                    "Ativos Spot sem cotacao USDT: "
+                    + ", ".join(account_info.get("spotUnpricedAssets", []))
+                )
+            else:
+                spot_equity = account_info["spotEquityUSDT"]
+                account_snapshot["equity_usdt"] = spot_equity
+                prices = account_info.get("spotAssetPricesUSDT", {})
+                for position in positions:
+                    asset = position["symbol"].removesuffix("USDT")
+                    price = _finite_decimal(prices.get(asset))
+                    if price is not None and price > 0:
+                        position["notional"] = str(Decimal(position["quantity"]) * price)
+
         available_balance = (
             _extract_available_usdt(account_info) if account_info is not None else None
         )
 
-        if available_balance is not None:
+        if available_balance is not None and not account_snapshot.get("account_info_failed"):
             account_snapshot["available_balance_usdt"] = available_balance
         else:
             account_snapshot["account_info_failed"] = True
@@ -97,7 +115,8 @@ class PortfolioSnapshotProvider:
         account_snapshot["daily_drawdown"] = daily_drawdown_snapshot(
             metrics=metrics,
             wallet_balance_usdt=(
-                _extract_wallet_usdt(account_info) if account_info is not None else None
+                spot_equity or _extract_wallet_usdt(account_info)
+                if account_info is not None else None
             ),
             open_unrealized_loss_usdt=open_unrealized_loss,
             position_snapshot_complete=not position_failed_symbols,
