@@ -394,7 +394,9 @@ class BinanceFuturesClient:
         path = "/api/v3/order" if self.spot_mode else "/fapi/v1/order"
         response = self._signed_request("GET", path, params=params)
         if self.spot_mode and isinstance(response, dict):
-            return self._normalize_spot_order_response(response)
+            normalized = self._normalize_spot_order_response(response)
+            self._record_spot_order_progress(normalized)
+            return normalized
         return response
 
     def query_algo_order(
@@ -730,8 +732,7 @@ class BinanceFuturesClient:
                 except Exception:
                     current_price = Decimal("0")
 
-            with self._spot_state_lock:
-                entry_price = self._spot_entry_prices.get(sym) or current_price
+            entry_price = self.spot_holdings.average_cost(sym)
 
             ref_price = current_price if current_price > 0 else entry_price
             notional = total_qty * ref_price if ref_price > 0 else total_qty
@@ -803,6 +804,7 @@ class BinanceFuturesClient:
             if Decimal("0") < free_qty < requested_qty:
                 clean_params["quantity"] = str(free_qty.normalize())
 
+        clean_params.setdefault("newOrderRespType", "FULL")
         response = self._signed_request(
             "POST",
             "/api/v3/order",
@@ -812,31 +814,31 @@ class BinanceFuturesClient:
             return response
 
         normalized = self._normalize_spot_order_response(response)
-        status = str(normalized.get("status", "") or "").upper()
-        if symbol and status in {"FILLED", "PARTIALLY_FILLED"}:
-            try:
-                exec_qty = Decimal(str(normalized.get("executedQty", "0") or "0"))
-                avg_price = Decimal(str(normalized.get("avgPrice", "0") or "0"))
-            except (InvalidOperation, ValueError, TypeError):
-                exec_qty = Decimal("0")
-                avg_price = Decimal("0")
-
-            with self._spot_state_lock:
-                order_id = str(normalized.get("orderId") or normalized.get("clientOrderId") or "")
-                client_id = str(normalized.get("clientOrderId") or clean_params.get("newClientOrderId") or "")
-                if order_id and client_id.startswith(f"{self.bot_order_prefix}_"):
-                    self.spot_holdings.record_order_fill(
-                        symbol=symbol, side=side, order_id=order_id,
-                        executed_quantity=exec_qty,
-                    )
-                if side == "BUY" and exec_qty > 0:
-                    if avg_price <= 0:
-                        avg_price = self._spot_last_prices.get(symbol, Decimal("0"))
-                    if avg_price > 0:
-                        self._spot_entry_prices[symbol] = avg_price
-                    self._spot_position_quantities[symbol] = exec_qty
+        self._record_spot_order_progress(normalized)
 
         return normalized
+
+    def _record_spot_order_progress(self, order: dict[str, Any]) -> None:
+        client_id = str(order.get("clientOrderId") or "")
+        if not client_id.startswith(f"{self.bot_order_prefix}_"):
+            return
+        symbol = str(order.get("symbol") or "").upper().strip()
+        side = str(order.get("side") or "").upper().strip()
+        order_id = str(order.get("orderId") or "")
+        if not symbol or side not in {"BUY", "SELL"} or not order_id:
+            return
+        self.spot_holdings.record_order_fill(
+            symbol=symbol, side=side, order_id=order_id,
+            executed_quantity=Decimal(str(order.get("executedQty", "0") or "0")),
+            quote_quantity=Decimal(str(order.get("cumQuote", "0") or "0")),
+        )
+        for fill in order.get("fills") or []:
+            self.spot_holdings.record_fee(
+                symbol=symbol, side=side, order_id=order_id,
+                trade_id=str(fill.get("tradeId") or ""),
+                asset=str(fill.get("commissionAsset") or "").upper(),
+                amount=Decimal(str(fill.get("commission", "0") or "0")),
+            )
 
     def observe_spot_execution_report(self, event: dict[str, Any]) -> None:
         if not self.spot_mode or str(event.get("e", "")).lower() != "executionreport":
@@ -851,7 +853,15 @@ class BinanceFuturesClient:
             self.spot_holdings.record_order_fill(
                 symbol=symbol, side=side, order_id=order_id,
                 executed_quantity=Decimal(str(event.get("z", "0") or "0")),
+                quote_quantity=Decimal(str(event.get("Z", "0") or "0")),
             )
+            if str(event.get("x", "")).upper() == "TRADE":
+                self.spot_holdings.record_fee(
+                    symbol=symbol, side=side, order_id=order_id,
+                    trade_id=str(event.get("t") or ""),
+                    asset=str(event.get("N") or "").upper(),
+                    amount=Decimal(str(event.get("n", "0") or "0")),
+                )
 
     @staticmethod
     def _normalize_spot_order_response(
