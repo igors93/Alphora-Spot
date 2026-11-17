@@ -1,6 +1,9 @@
 import json
+import hashlib
+import hmac
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -163,9 +166,13 @@ class UserDataStreamHub:
         self._events_since_heartbeat = 0
         self._last_heartbeat_at = 0.0
         self.logger = get_logger(__name__)
+        self._spot_subscription_id = ""
 
     @property
     def stream_url(self) -> str:
+        if getattr(self.client, "spot_mode", False):
+            host = "ws-api.testnet.binance.vision" if "testnet" in self.client.base_url else "ws-api.binance.com:443"
+            return f"wss://{host}/ws-api/v3"
         if not self.listen_key:
             return ""
         return f"{self.base_url}/ws/{self.listen_key}"
@@ -225,7 +232,7 @@ class UserDataStreamHub:
             ):
                 keepalive_thread.join(timeout=1.0)
 
-            if listen_key:
+            if listen_key and not getattr(self.client, "spot_mode", False):
                 try:
                     self.client.close_user_data_stream()
                 except Exception as error:
@@ -289,7 +296,10 @@ class UserDataStreamHub:
                 "enabled": True,
                 "running": self._running,
                 "connected": self._connected,
-                "listen_key_active": bool(self.listen_key),
+                "listen_key_active": (
+                    self._connected if getattr(self.client, "spot_mode", False)
+                    else bool(self.listen_key)
+                ),
                 "pending_events": len(self.pending_events),
                 "events_since_heartbeat": self._events_since_heartbeat,
                 "last_message_at": self._last_message_at,
@@ -303,8 +313,9 @@ class UserDataStreamHub:
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                self._open_listen_key()
-                self._start_keepalive_loop()
+                if not getattr(self.client, "spot_mode", False):
+                    self._open_listen_key()
+                    self._start_keepalive_loop()
 
                 import websocket
 
@@ -384,13 +395,44 @@ class UserDataStreamHub:
 
     def _on_open(self, _ws_app: Any) -> None:
         with self._lock:
-            self._connected = True
+            self._connected = not getattr(self.client, "spot_mode", False)
             self._last_error = ""
             self._last_heartbeat_at = time.time()
+        if getattr(self.client, "spot_mode", False):
+            timestamp = int(time.time() * 1000) + getattr(self.client, "time_offset_ms", 0)
+            params = {"apiKey": self.client.api_key, "timestamp": timestamp}
+            payload = f"apiKey={params['apiKey']}&timestamp={timestamp}"
+            params["signature"] = hmac.new(
+                self.client.api_secret.encode(), payload.encode(), hashlib.sha256,
+            ).hexdigest()
+            request_id = uuid.uuid4().hex
+            self._spot_subscription_id = request_id
+            _ws_app.send(json.dumps({
+                "id": request_id,
+                "method": "userDataStream.subscribe.signature",
+                "params": params,
+            }))
         self.logger.info("User Data Stream conectado em shadow")
 
     def _on_message(self, _ws_app: Any, message: str) -> None:
         now = time.time()
+        if getattr(self.client, "spot_mode", False):
+            try:
+                payload = json.loads(message)
+            except (ValueError, TypeError):
+                return
+            if payload.get("id") == self._spot_subscription_id:
+                if payload.get("status") == 200:
+                    with self._lock:
+                        self._connected = True
+                        self._last_error = ""
+                    self.ingest_message({"e": "SPOT_STREAM_RESYNC_REQUIRED"}, received_at=now)
+                else:
+                    self._record_error(RuntimeError(f"Spot stream subscription rejected: {payload.get('status')}"))
+                    _ws_app.close()
+                return
+            if isinstance(payload.get("event"), dict):
+                message = payload["event"]
         self.ingest_message(message, received_at=now)
         self._maybe_log_heartbeat(now)
 
@@ -447,6 +489,46 @@ def classify_user_data_stream_payload(
         return _classify_order_trade_update(
             payload,
             symbol=symbol,
+            shadow_only=shadow_only,
+        )
+
+    if event_type == "EXECUTIONREPORT":
+        return _classify_order_trade_update(
+            {"o": payload}, symbol=symbol, shadow_only=shadow_only,
+        )
+
+    if event_type == "OUTBOUNDACCOUNTPOSITION":
+        return UserDataStreamClassification(
+            category="ACCOUNT", operational_type="SPOT_BALANCE_SNAPSHOT", severity="INFO",
+            symbol="", symbols=[], summary="Saldos Spot atualizados.",
+            details={"balance_count": len(payload.get("B", []))},
+            should_update_account_cache=True, shadow_only=shadow_only,
+        )
+
+    if event_type == "BALANCEUPDATE":
+        return UserDataStreamClassification(
+            category="ACCOUNT", operational_type="SPOT_BALANCE_DELTA", severity="INFO",
+            symbol="", symbols=[], summary="Saldo Spot alterado fora de uma ordem.",
+            details={"asset": payload.get("a"), "delta": payload.get("d")},
+            should_update_account_cache=True, shadow_only=shadow_only,
+        )
+
+    if event_type == "LISTSTATUS":
+        return UserDataStreamClassification(
+            category="ORDER", operational_type="SPOT_ORDER_LIST_UPDATE", severity="INFO",
+            symbol=symbol, symbols=[symbol] if symbol else [],
+            summary="Lista de ordens Spot atualizada.",
+            details={"order_list_id": payload.get("g"), "list_status": payload.get("l")},
+            should_update_order_cache=True, should_update_account_cache=True,
+            shadow_only=shadow_only,
+        )
+
+    if event_type == "SPOT_STREAM_RESYNC_REQUIRED":
+        return UserDataStreamClassification(
+            category="CONNECTION", operational_type="SPOT_STREAM_RESYNC_REQUIRED",
+            severity="WARNING", symbol="", symbols=[],
+            summary="Stream Spot reconectado; reconciliacao REST obrigatoria.",
+            should_update_order_cache=True, should_update_account_cache=True,
             shadow_only=shadow_only,
         )
 
@@ -540,6 +622,10 @@ def _classify_order_trade_update(
         "last_filled_quantity": str(order.get("l", "") or ""),
         "filled_quantity": str(order.get("z", "") or ""),
         "last_filled_price": str(order.get("L", "") or ""),
+        "cumulative_quote_quantity": str(order.get("Z", "") or ""),
+        "last_quote_quantity": str(order.get("Y", "") or ""),
+        "trade_id": str(order.get("t", "") or ""),
+        "order_list_id": str(order.get("g", "") or ""),
         "commission_asset": str(order.get("N", "") or ""),
         "commission": str(order.get("n", "") or ""),
         "realized_pnl": str(order.get("rp", "") or ""),

@@ -49,6 +49,7 @@ class UserDataShadowCache:
         self.balances_by_asset: dict[str, dict[str, Any]] = {}
         self.account_meta: dict[str, Any] = {}
         self.dirty_position_symbols: set[str] = set()
+        self.dirty_order_symbols: set[str] = set()
         self.account_dirty = False
         self.last_event_at: float | None = None
         self.last_order_update_at: float | None = None
@@ -173,6 +174,7 @@ class UserDataShadowCache:
                 "positions_count": len(self.positions_by_symbol),
                 "balances_count": len(self.balances_by_asset),
                 "dirty_position_symbols": sorted(self.dirty_position_symbols),
+                "dirty_order_symbols": sorted(self.dirty_order_symbols),
                 "account_dirty": self.account_dirty,
                 "last_event_at": self.last_event_at,
                 "last_order_update_at": self.last_order_update_at,
@@ -241,6 +243,7 @@ class UserDataShadowCache:
                 }
                 for source_key, output_key in (
                     ("available_balance", "availableBalance"),
+                    ("locked_balance", "locked"),
                     ("margin_balance", "marginBalance"),
                     ("cross_un_pnl", "crossUnPnl"),
                     ("unrealized_profit", "unrealizedProfit"),
@@ -483,6 +486,7 @@ class UserDataShadowCache:
 
         with self._lock:
             self.orders_by_symbol[normalized_symbol] = reconciled_orders
+            self.dirty_order_symbols.discard(normalized_symbol)
             self.last_order_update_at = received_at
             self.last_event_at = received_at
         return True
@@ -493,7 +497,18 @@ class UserDataShadowCache:
         raw: dict[str, Any],
         received_at: float,
     ) -> list[str]:
-        order = raw.get("o")
+        if str(raw.get("e", "")).upper() == "SPOT_STREAM_RESYNC_REQUIRED":
+            self.dirty_order_symbols.update(self.orders_by_symbol)
+            self.orders_by_symbol.clear()
+            self.dirty_position_symbols.update(self.positions_by_symbol)
+            return []
+        if str(raw.get("e", "")).upper() == "LISTSTATUS":
+            symbol = str(raw.get("s", "") or "").upper().strip()
+            if symbol:
+                self.orders_by_symbol.pop(symbol, None)
+                self.dirty_order_symbols.add(symbol)
+            return []
+        order = raw if str(raw.get("e", "")).upper() == "EXECUTIONREPORT" else raw.get("o")
         if not isinstance(order, dict):
             return []
 
@@ -527,6 +542,10 @@ class UserDataShadowCache:
             "realized_pnl": str(order.get("rp", "") or ""),
             "commission": str(order.get("n", "") or ""),
             "commission_asset": str(order.get("N", "") or ""),
+            "cumulative_quote_quantity": str(order.get("Z", "") or ""),
+            "last_quote_quantity": str(order.get("Y", "") or ""),
+            "trade_id": str(order.get("t", "") or ""),
+            "order_list_id": str(order.get("g", "") or ""),
             "updated_at": received_at,
         }
 
@@ -578,6 +597,33 @@ class UserDataShadowCache:
     ) -> bool:
         account = raw.get("a")
         updated = False
+
+        if event_type == "OUTBOUNDACCOUNTPOSITION":
+            for balance in raw.get("B", []):
+                if not isinstance(balance, dict):
+                    continue
+                asset = str(balance.get("a", "") or "").upper().strip()
+                if not asset:
+                    continue
+                free = _to_decimal(balance.get("f"))
+                locked = _to_decimal(balance.get("l"))
+                self.balances_by_asset[asset] = {
+                    "asset": asset, "wallet_balance": str(free + locked),
+                    "cross_wallet_balance": str(free + locked),
+                    "available_balance": str(free), "locked_balance": str(locked),
+                    "runtime_balance_fields_trusted": True,
+                    "updated_at": received_at, "source": "spot_user_stream",
+                }
+                updated = True
+            if updated:
+                self.last_account_update_at = received_at
+            return updated
+
+        if event_type == "BALANCEUPDATE":
+            self.account_meta["last_spot_balance_delta"] = {
+                "asset": raw.get("a"), "delta": raw.get("d"), "at": received_at,
+            }
+            return False
 
         if isinstance(account, dict):
             balances = account.get("B")
