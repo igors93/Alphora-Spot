@@ -698,7 +698,12 @@ class EngineOrderMixin(EngineMixinHost):
         error: Exception,
     ) -> dict:
         try:
-            response = self.client.query_algo_order(client_algo_id=client_algo_id)
+            if getattr(self.client, "spot_mode", False):
+                response = self.client.query_algo_order(
+                    client_algo_id=client_algo_id, symbol=self.config.symbol,
+                )
+            else:
+                response = self.client.query_algo_order(client_algo_id=client_algo_id)
         except (BinanceFuturesAPIError, BinanceFuturesNetworkError) as query_error:
             self._pause_engine(
                 "algo_order_status_unknown",
@@ -950,10 +955,10 @@ class EngineOrderMixin(EngineMixinHost):
             )
 
             try:
-                response = self.client.cancel_algo_order(
-                    algo_id=algo_id,
-                    client_algo_id=client_algo_id or None,
-                )
+                cancel_params = {"algo_id": algo_id, "client_algo_id": client_algo_id or None}
+                if getattr(self.client, "spot_mode", False):
+                    cancel_params["symbol"] = self.config.symbol
+                response = self.client.cancel_algo_order(**cancel_params)
                 cancelled_algo.append(response)
                 observe_event(
                     "order_cancel_succeeded",

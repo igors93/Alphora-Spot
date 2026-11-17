@@ -568,11 +568,15 @@ def _validate_common_order(
     if str(order.get("side", "")) != expected.close_side:
         errors.append(f"side invalido: {order.get('side')}")
 
-    if not _is_close_position(order):
-        errors.append("closePosition invalido")
+    if order.get("spotOco"):
+        if int(order.get("orderListId", -1)) < 0:
+            errors.append("orderListId Spot OCO invalido")
+    else:
+        if not _is_close_position(order):
+            errors.append("closePosition invalido")
 
-    if str(order.get("workingType", "")) != expected.working_type:
-        errors.append(f"workingType invalido: {order.get('workingType')}")
+        if str(order.get("workingType", "")) != expected.working_type:
+            errors.append(f"workingType invalido: {order.get('workingType')}")
 
     status = str(order.get("algoStatus") or order.get("status") or "NEW")
     if status not in {"NEW", "PARTIALLY_FILLED"}:

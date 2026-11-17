@@ -180,7 +180,12 @@ class EngineStateMixin(EngineMixinHost):
             if not client_algo_id:
                 continue
             try:
-                response = self.client.query_algo_order(client_algo_id=client_algo_id)
+                if getattr(self.client, "spot_mode", False):
+                    response = self.client.query_algo_order(
+                        client_algo_id=client_algo_id, symbol=self.config.symbol,
+                    )
+                else:
+                    response = self.client.query_algo_order(client_algo_id=client_algo_id)
             except (BinanceFuturesAPIError, BinanceFuturesNetworkError, AttributeError) as error:
                 diagnostics[f"{label.lower()}_query_error"] = str(error)
                 continue

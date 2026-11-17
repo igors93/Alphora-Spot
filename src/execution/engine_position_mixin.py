@@ -973,52 +973,80 @@ class EnginePositionMixin(EngineMixinHost):
         )
 
         stop_response = existing_stop_order
-        if existing_stop_order is None:
-            stop_response = self._submit_protection_order(
-                purpose="stop",
-                client_algo_id=stop_client_algo_id,
-                expected=expected,
-                trade_id=trade_id,
-                repair_key=repair_key,
-            )
-            if stop_response is None:
-                return self._protection_skipped_result(
-                    reason="POSITION_FLAT_DURING_STOP_SUBMISSION",
-                    trade_id=trade_id,
-                    repair_key=repair_key,
-                )
-            created_stop = True
-
-        current_position = self._refresh_position_for_protection_operation(
-            expected_position=position,
-            stage="between_stop_and_take",
-            trade_id=trade_id,
-        )
-        if current_position is None:
-            return self._protection_skipped_result(
-                reason="POSITION_FLAT_BETWEEN_STOP_AND_TAKE",
-                trade_id=trade_id,
-                repair_key=repair_key,
-            )
-        position = current_position
-        self._assert_protection_triggers_not_breached(position=position, expected=expected)
-
         take_response = existing_take_order
-        if existing_take_order is None:
-            take_response = self._submit_protection_order(
-                purpose="take",
-                client_algo_id=take_client_algo_id,
-                expected=expected,
-                trade_id=trade_id,
-                repair_key=repair_key,
-            )
-            if take_response is None:
-                return self._protection_skipped_result(
-                    reason="POSITION_FLAT_DURING_TAKE_SUBMISSION",
+        if getattr(self.client, "spot_mode", False):
+            if bool(existing_stop_order) != bool(existing_take_order):
+                self._pause_engine("spot_oco_incomplete", trade_id=trade_id)
+                raise EnginePaused("Spot OCO incompleta; reconciliacao necessaria")
+            if existing_stop_order is None:
+                list_client_id = self._protection_client_algo_id("OCO", repair_key)
+                if self.config.mutations_enabled:
+                    oco_response = self.client.new_spot_oco_order(
+                        symbol=self.config.symbol,
+                        quantity=format_decimal(position.quantity),
+                        stop_price=format_decimal(expected.stop_price),
+                        take_price=format_decimal(expected.take_profit_price),
+                        list_client_order_id=list_client_id,
+                        stop_client_order_id=stop_client_algo_id,
+                        take_client_order_id=take_client_algo_id,
+                    )
+                else:
+                    oco_response = {"dry_run": True, "listClientOrderId": list_client_id}
+                self._record_journal(
+                    "spot_oco_submitted", trade_id=trade_id, response=oco_response,
+                    stop_client_algo_id=stop_client_algo_id,
+                    take_client_algo_id=take_client_algo_id,
+                )
+                stop_response = oco_response
+                take_response = oco_response
+                created_stop = True
+                created_take = True
+        else:
+            if existing_stop_order is None:
+                stop_response = self._submit_protection_order(
+                    purpose="stop",
+                    client_algo_id=stop_client_algo_id,
+                    expected=expected,
                     trade_id=trade_id,
                     repair_key=repair_key,
                 )
-            created_take = True
+                if stop_response is None:
+                    return self._protection_skipped_result(
+                        reason="POSITION_FLAT_DURING_STOP_SUBMISSION",
+                        trade_id=trade_id,
+                        repair_key=repair_key,
+                    )
+                created_stop = True
+
+            current_position = self._refresh_position_for_protection_operation(
+                expected_position=position,
+                stage="between_stop_and_take",
+                trade_id=trade_id,
+            )
+            if current_position is None:
+                return self._protection_skipped_result(
+                    reason="POSITION_FLAT_BETWEEN_STOP_AND_TAKE",
+                    trade_id=trade_id,
+                    repair_key=repair_key,
+                )
+            position = current_position
+            self._assert_protection_triggers_not_breached(position=position, expected=expected)
+
+            if existing_take_order is None:
+                take_response = self._submit_protection_order(
+                    purpose="take",
+                    client_algo_id=take_client_algo_id,
+                    expected=expected,
+                    trade_id=trade_id,
+                    repair_key=repair_key,
+                )
+                if take_response is None:
+                    return self._protection_skipped_result(
+                        reason="POSITION_FLAT_DURING_TAKE_SUBMISSION",
+                        trade_id=trade_id,
+                        repair_key=repair_key,
+                    )
+                created_take = True
 
         current_position = self._refresh_position_for_protection_operation(
             expected_position=position,

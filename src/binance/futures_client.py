@@ -108,7 +108,6 @@ class BinanceFuturesClient:
         self._spot_position_quantities: dict[str, Decimal] = {}
         self._spot_last_prices: dict[str, Decimal] = {}
         self._spot_algo_orders: dict[str, dict[str, Any]] = {}
-        self._spot_algo_id_seq = 1
         self._last_listen_key = ""
 
         if not self.base_url.startswith("https://"):
@@ -315,12 +314,15 @@ class BinanceFuturesClient:
     ) -> list[dict[str, Any]]:
         # symbol=None returns every symbol's open orders (request weight 40, not 1).
         path = "/api/v3/openOrders" if self.spot_mode else "/fapi/v1/openOrders"
-        return self._signed_request(
+        orders = self._signed_request(
             "GET",
             path,
             params={"symbol": symbol} if symbol else None,
             timeout=timeout,
         )
+        if self.spot_mode:
+            return [order for order in orders if int(order.get("orderListId", -1)) < 0]
+        return orders
 
     def open_algo_orders(
         self,
@@ -329,13 +331,15 @@ class BinanceFuturesClient:
         timeout: RequestTimeout | None = None,
     ) -> list[dict[str, Any]]:
         if self.spot_mode:
-            normalized = str(symbol or "").upper().strip()
-            with self._spot_state_lock:
-                return [
-                    dict(order)
-                    for order in self._spot_algo_orders.values()
-                    if not normalized or str(order.get("symbol", "")).upper().strip() == normalized
-                ]
+            return [
+                self._normalize_spot_protection_order(order)
+                for order in self._signed_request(
+                    "GET", "/api/v3/openOrders",
+                    params={"symbol": symbol} if symbol else None,
+                    timeout=timeout,
+                )
+                if int(order.get("orderListId", -1)) >= 0
+            ]
         # symbol=None returns every symbol's open algo orders (request weight 40, not 1).
         return self._signed_request(
             "GET",
@@ -392,6 +396,7 @@ class BinanceFuturesClient:
         self,
         algo_id: int | str | None = None,
         client_algo_id: str | None = None,
+        symbol: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {}
 
@@ -405,18 +410,15 @@ class BinanceFuturesClient:
             raise ValueError("Informe algo_id ou client_algo_id para consultar algo order")
 
         if self.spot_mode:
-            with self._spot_state_lock:
-                if client_algo_id is not None and str(client_algo_id) in self._spot_algo_orders:
-                    return dict(self._spot_algo_orders[str(client_algo_id)])
-                for order in self._spot_algo_orders.values():
-                    if algo_id is not None and str(order.get("algoId")) == str(algo_id):
-                        return dict(order)
-            return {
-                "algoId": algo_id or 0,
-                "clientAlgoId": client_algo_id or "",
-                "algoStatus": "CANCELED",
-                "status": "CANCELED",
-            }
+            resolved_symbol = symbol or self._spot_algo_orders.get(str(client_algo_id), {}).get("symbol")
+            if not resolved_symbol:
+                raise ValueError("symbol obrigatorio para consultar protecao Spot")
+            order = self.query_order(
+                symbol=resolved_symbol,
+                order_id=algo_id if client_algo_id is None else None,
+                orig_client_order_id=client_algo_id,
+            )
+            return self._normalize_spot_protection_order(order)
 
         return self._signed_request("GET", "/fapi/v1/algoOrder", params=params)
 
@@ -449,6 +451,7 @@ class BinanceFuturesClient:
         self,
         algo_id: int | str | None = None,
         client_algo_id: str | None = None,
+        symbol: str | None = None,
     ) -> dict[str, Any]:
         self._ensure_mutation_allowed("cancel_algo_order")
         params: dict[str, Any] = {}
@@ -463,17 +466,17 @@ class BinanceFuturesClient:
             raise ValueError("Informe algo_id ou client_algo_id para cancelar algo order")
 
         if self.spot_mode:
-            with self._spot_state_lock:
-                if client_algo_id is not None:
-                    removed = self._spot_algo_orders.pop(str(client_algo_id), None)
-                    if removed is not None:
-                        return {**removed, "algoStatus": "CANCELED", "status": "CANCELED"}
-                if algo_id is not None:
-                    for key, order in list(self._spot_algo_orders.items()):
-                        if str(order.get("algoId")) == str(algo_id):
-                            self._spot_algo_orders.pop(key, None)
-                            return {**order, "algoStatus": "CANCELED", "status": "CANCELED"}
-            return {"algoId": algo_id or 0, "clientAlgoId": client_algo_id or "", "status": "CANCELED"}
+            resolved_symbol = symbol or self._spot_algo_orders.get(str(client_algo_id), {}).get("symbol")
+            if not resolved_symbol:
+                raise ValueError("symbol obrigatorio para cancelar protecao Spot")
+            order = self.query_algo_order(algo_id, client_algo_id, resolved_symbol)
+            order_list_id = int(order.get("orderListId", -1))
+            if order_list_id < 0:
+                raise ValueError("ordem Spot nao pertence a uma lista OCO")
+            return self._signed_request(
+                "DELETE", "/api/v3/orderList",
+                params={"symbol": resolved_symbol, "orderListId": order_list_id},
+            )
 
         return self._signed_request(
             "DELETE",
@@ -503,12 +506,17 @@ class BinanceFuturesClient:
     def cancel_all_open_algo_orders(self, symbol: str) -> dict[str, Any]:
         self._ensure_mutation_allowed("cancel_all_open_algo_orders")
         if self.spot_mode:
-            normalized = str(symbol or "").upper().strip()
-            with self._spot_state_lock:
-                for key, order in list(self._spot_algo_orders.items()):
-                    if str(order.get("symbol", "")).upper().strip() == normalized:
-                        self._spot_algo_orders.pop(key, None)
-            return {"code": 200, "msg": "SPOT_ALGO_ORDERS_CANCELED"}
+            responses = []
+            seen_lists: set[int] = set()
+            for order in self.open_algo_orders(symbol):
+                if not str(order.get("clientAlgoId", "")).startswith("ALPHORA_"):
+                    continue
+                order_list_id = int(order["orderListId"])
+                if order_list_id in seen_lists:
+                    continue
+                seen_lists.add(order_list_id)
+                responses.append(self.cancel_algo_order(algo_id=order["orderId"], symbol=symbol))
+            return {"canceled": responses}
         return self._signed_request(
             "DELETE",
             "/fapi/v1/algoOpenOrders",
@@ -568,29 +576,54 @@ class BinanceFuturesClient:
     def new_algo_order(self, **params) -> dict[str, Any]:
         self._ensure_mutation_allowed("new_algo_order")
         if self.spot_mode:
-            with self._spot_state_lock:
-                algo_id = self._spot_algo_id_seq
-                self._spot_algo_id_seq += 1
-                client_algo_id = str(
-                    params.get("clientAlgoId")
-                    or params.get("newClientOrderId")
-                    or f"SPOT_ALGO_{algo_id}"
-                )
-                order_record = {
-                    **params,
-                    "algoId": algo_id,
-                    "clientAlgoId": client_algo_id,
-                    "orderType": str(params.get("type") or params.get("orderType") or ""),
-                    "algoStatus": "NEW",
-                    "status": "NEW",
-                }
-                self._spot_algo_orders[client_algo_id] = order_record
-                return dict(order_record)
+            raise ValueError("Spot requer OCO real via new_spot_oco_order")
         return self._signed_request(
             "POST",
             "/fapi/v1/algoOrder",
             params=params,
         )
+
+    def new_spot_oco_order(
+        self, *, symbol: str, quantity: str, stop_price: str, take_price: str,
+        list_client_order_id: str, stop_client_order_id: str, take_client_order_id: str,
+    ) -> dict[str, Any]:
+        self._ensure_mutation_allowed("new_spot_oco_order")
+        if not self.spot_mode:
+            raise ValueError("OCO Spot indisponivel em Futures")
+        params = {
+            "symbol": symbol, "side": "SELL", "quantity": quantity,
+            "aboveType": "LIMIT_MAKER", "abovePrice": take_price,
+            "belowType": "STOP_LOSS", "belowStopPrice": stop_price,
+            "listClientOrderId": list_client_order_id,
+            "aboveClientOrderId": take_client_order_id,
+            "belowClientOrderId": stop_client_order_id,
+            "newOrderRespType": "RESULT",
+        }
+        try:
+            response = self._signed_request("POST", "/api/v3/orderList/oco", params=params)
+        except BinanceFuturesNetworkError:
+            response = self._signed_request(
+                "GET", "/api/v3/orderList",
+                params={"symbol": symbol, "origClientOrderId": list_client_order_id},
+            )
+        for client_id in (stop_client_order_id, take_client_order_id):
+            self._spot_algo_orders[client_id] = {"symbol": symbol}
+        return response
+
+    @staticmethod
+    def _normalize_spot_protection_order(order: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(order)
+        order_type = str(order.get("type") or order.get("origType") or "")
+        if order_type in {"STOP_LOSS", "STOP_LOSS_LIMIT"}:
+            normalized["orderType"] = "STOP_MARKET"
+            normalized["triggerPrice"] = order.get("stopPrice", "0")
+        elif order_type in {"LIMIT_MAKER", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
+            normalized["orderType"] = "TAKE_PROFIT_MARKET"
+            normalized["triggerPrice"] = order.get("price", "0")
+        normalized["clientAlgoId"] = order.get("clientOrderId", "")
+        normalized["algoId"] = order.get("orderId")
+        normalized["spotOco"] = True
+        return normalized
 
     def _normalize_spot_account_info(self, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):

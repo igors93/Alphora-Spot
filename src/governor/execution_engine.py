@@ -825,9 +825,6 @@ class ExecutionEngine:
             if self._enforce_paper_protections(engine):
                 return self.get_position(symbol_config).is_open
             return position.is_open
-        if position.is_open and bool(getattr(self.client, "spot_mode", False)):
-            if self._enforce_spot_protections(symbol_config, engine, position):
-                return self.get_position(symbol_config).is_open
         if position.is_open:
             engine.audit_protections(position, reason="governor_cycle")
         return position.is_open
