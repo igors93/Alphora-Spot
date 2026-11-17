@@ -9,6 +9,12 @@ from urllib.parse import urlencode
 
 import requests
 
+from domain.symbol_rules import round_quantity_down
+from futures.exchange_rules import (
+    round_spot_market_quantity,
+    spot_symbol_filters,
+    validate_spot_order_filters,
+)
 from binance.rest_weight import (
     TOO_MANY_REQUESTS_CODE,
     RestWeightLedger,
@@ -137,6 +143,7 @@ class BinanceFuturesClient:
         self._spot_position_quantities: dict[str, Decimal] = {}
         self._spot_last_prices: dict[str, Decimal] = {}
         self._spot_algo_orders: dict[str, dict[str, Any]] = {}
+        self._spot_exchange_info: dict[str, Any] | None = None
         self.spot_holdings = SpotHoldingsStore(spot_holdings_path) if self.spot_mode else None
         self.bot_order_prefix = bot_order_prefix.upper().strip()
         self.bot_order_prefixes = {self.bot_order_prefix}
@@ -240,7 +247,10 @@ class BinanceFuturesClient:
 
     def exchange_info(self, *, timeout: RequestTimeout | None = None) -> dict[str, Any]:
         path = "/api/v3/exchangeInfo" if self.spot_mode else "/fapi/v1/exchangeInfo"
-        return self._public_request("GET", path, timeout=timeout)
+        response = self._public_request("GET", path, timeout=timeout)
+        if self.spot_mode:
+            self._spot_exchange_info = response
+        return response
 
     def ticker_price(
         self,
@@ -637,6 +647,22 @@ class BinanceFuturesClient:
             raise ValueError("OCO Spot indisponivel em Futures")
         if Decimal(quantity) > self.spot_holdings.quantity(symbol):
             raise ValueError("OCO excede quantidade pertencente ao bot")
+        self.account_info()
+        free_quantity = self._spot_balances.get(_spot_base_asset(symbol), (Decimal("0"), Decimal("0")))[0]
+        if Decimal(quantity) > free_quantity:
+            raise ValueError("OCO excede saldo Spot livre")
+        filters = self._spot_filters(symbol)
+        reference = self._spot_reference_price(symbol, filters)
+        for trigger_price in (Decimal(stop_price), Decimal(take_price)):
+            validate_spot_order_filters(
+                filters=filters, quantity=Decimal(quantity), price=trigger_price,
+                side="SELL", market_order=False, reference_price=reference,
+            )
+        validate_spot_order_filters(
+            filters=filters, quantity=Decimal(quantity), price=Decimal(stop_price),
+            side="SELL", market_order=True, reference_price=reference,
+        )
+        self._spot_check_order_count(symbol, filters, additional=2, order_list=True)
         params = {
             "symbol": symbol, "side": "SELL", "quantity": quantity,
             "aboveType": "LIMIT_MAKER", "abovePrice": take_price,
@@ -859,6 +885,33 @@ class BinanceFuturesClient:
             if free_qty < requested_qty:
                 clean_params["quantity"] = str(free_qty.normalize())
 
+        if symbol and requested_qty is not None:
+            filters = self._spot_filters(symbol)
+            order_type = str(clean_params.get("type", "")).upper()
+            market_order = order_type == "MARKET"
+            quantity = Decimal(str(clean_params.get("quantity", "0")))
+            if market_order:
+                quantity = round_spot_market_quantity(quantity, filters)
+            else:
+                lot = filters.get("LOT_SIZE", {})
+                step = Decimal(str(lot.get("stepSize", "0")))
+                if step > 0:
+                    quantity = round_quantity_down(quantity, step)
+            reference = self._spot_reference_price(symbol, filters)
+            price = reference if market_order else Decimal(str(clean_params.get("price", "0")))
+            validate_spot_order_filters(
+                filters=filters, quantity=quantity, price=price,
+                side=side, market_order=market_order, reference_price=reference,
+            )
+            self._spot_check_order_count(symbol, filters, additional=1)
+            max_position = Decimal(str(filters.get("MAX_POSITION", {}).get("maxPosition", "0")))
+            if side == "BUY" and max_position > 0:
+                self.account_info()
+                held = sum(self._spot_balances.get(_spot_base_asset(symbol), (Decimal("0"), Decimal("0"))))
+                if held + quantity > max_position:
+                    raise ValueError("MAX_POSITION: saldo apos compra excede limite")
+            clean_params["quantity"] = format(quantity, "f")
+
         clean_params["newOrderRespType"] = "FULL"
         response = self._signed_request(
             "POST",
@@ -872,6 +925,37 @@ class BinanceFuturesClient:
         self._record_spot_order_progress(normalized)
 
         return normalized
+
+    def _spot_filters(self, symbol: str) -> dict[str, dict]:
+        info = self._spot_exchange_info or self.exchange_info()
+        return spot_symbol_filters(info, symbol)
+
+    def _spot_reference_price(self, symbol: str, filters: dict[str, dict]) -> Decimal:
+        price = Decimal(str(self.ticker_price(symbol).get("price", "0")))
+        percent = filters.get("PERCENT_PRICE_BY_SIDE") or filters.get("PERCENT_PRICE")
+        if percent and int(percent.get("avgPriceMins", 0)) > 0:
+            average = self._public_request("GET", "/api/v3/avgPrice", params={"symbol": symbol})
+            return Decimal(str(average.get("price", "0")))
+        return price
+
+    def _spot_check_order_count(
+        self, symbol: str, filters: dict[str, dict], *, additional: int,
+        order_list: bool = False,
+    ) -> None:
+        limit = int(filters.get("MAX_NUM_ORDERS", {}).get("maxNumOrders", 0))
+        algo_limit = int(filters.get("MAX_NUM_ALGO_ORDERS", {}).get("maxNumAlgoOrders", 0))
+        if limit <= 0 and (not order_list or algo_limit <= 0):
+            return
+        open_orders = self._signed_request(
+            "GET", "/api/v3/openOrders", params={"symbol": symbol},
+        )
+        if limit > 0 and len(open_orders) + additional > limit:
+            raise ValueError("MAX_NUM_ORDERS: limite Spot atingido")
+        if order_list and algo_limit > 0:
+            lists = {int(order.get("orderListId", -1)) for order in open_orders}
+            lists.discard(-1)
+            if len(lists) + 1 > algo_limit:
+                raise ValueError("MAX_NUM_ALGO_ORDERS: limite Spot atingido")
 
     def _record_spot_order_progress(self, order: dict[str, Any]) -> None:
         client_id = str(order.get("clientOrderId") or "")
