@@ -16,6 +16,7 @@ from binance.rest_weight import (
     parse_retry_after,
     shared_rest_weight_ledger,
 )
+from binance.spot_holdings import SpotHoldingsStore
 
 RequestTimeout = float | tuple[float, float]
 
@@ -84,6 +85,8 @@ class BinanceFuturesClient:
         mutation_enabled: bool = True,
         rest_weight: RestWeightLedger | None = None,
         spot_mode: bool | None = None,
+        spot_holdings_path: str | None = None,
+        bot_order_prefix: str = "ALPHORA",
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -108,6 +111,8 @@ class BinanceFuturesClient:
         self._spot_position_quantities: dict[str, Decimal] = {}
         self._spot_last_prices: dict[str, Decimal] = {}
         self._spot_algo_orders: dict[str, dict[str, Any]] = {}
+        self.spot_holdings = SpotHoldingsStore(spot_holdings_path) if self.spot_mode else None
+        self.bot_order_prefix = bot_order_prefix.upper().strip()
         self._last_listen_key = ""
 
         if not self.base_url.startswith("https://"):
@@ -590,6 +595,8 @@ class BinanceFuturesClient:
         self._ensure_mutation_allowed("new_spot_oco_order")
         if not self.spot_mode:
             raise ValueError("OCO Spot indisponivel em Futures")
+        if Decimal(quantity) > self.spot_holdings.quantity(symbol):
+            raise ValueError("OCO excede quantidade pertencente ao bot")
         params = {
             "symbol": symbol, "side": "SELL", "quantity": quantity,
             "aboveType": "LIMIT_MAKER", "abovePrice": take_price,
@@ -685,20 +692,12 @@ class BinanceFuturesClient:
 
         with self._spot_state_lock:
             balances_snapshot = dict(self._spot_balances)
-            tracked_symbols = set(self._spot_entry_prices.keys()) | set(
-                self._spot_position_quantities.keys()
-            )
+            tracked_symbols = set(self.spot_holdings.positions)
 
         if symbol is not None:
             target_symbols = [str(symbol).upper().strip()]
         else:
-            quote_assets = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD"}
-            held_symbols = {
-                f"{asset}USDT"
-                for asset, (free_qty, locked_qty) in balances_snapshot.items()
-                if asset not in quote_assets and (free_qty + locked_qty) > 0
-            }
-            target_symbols = sorted(held_symbols | tracked_symbols)
+            target_symbols = sorted(tracked_symbols)
 
         results: list[dict[str, Any]] = []
         for sym in target_symbols:
@@ -706,7 +705,7 @@ class BinanceFuturesClient:
             free_qty, locked_qty = balances_snapshot.get(
                 base_asset, (Decimal("0"), Decimal("0"))
             )
-            total_qty = free_qty + locked_qty
+            total_qty = min(free_qty + locked_qty, self.spot_holdings.quantity(sym))
             if total_qty <= 0:
                 with self._spot_state_lock:
                     self._spot_entry_prices.pop(sym, None)
@@ -793,6 +792,11 @@ class BinanceFuturesClient:
         # On Spot SELL, if base-asset commission slightly reduced free balance below
         # the nominal position quantity, clamp to available free balance so the close succeeds.
         if side == "SELL" and symbol and requested_qty is not None and requested_qty > 0:
+            owned_qty = self.spot_holdings.quantity(symbol)
+            if owned_qty <= 0:
+                raise ValueError("Venda Spot bloqueada: ativo nao pertence ao bot")
+            requested_qty = min(requested_qty, owned_qty)
+            clean_params["quantity"] = str(requested_qty)
             base_asset = _spot_base_asset(symbol)
             with self._spot_state_lock:
                 free_qty, _ = self._spot_balances.get(base_asset, (Decimal("0"), Decimal("0")))
@@ -818,6 +822,13 @@ class BinanceFuturesClient:
                 avg_price = Decimal("0")
 
             with self._spot_state_lock:
+                order_id = str(normalized.get("orderId") or normalized.get("clientOrderId") or "")
+                client_id = str(normalized.get("clientOrderId") or clean_params.get("newClientOrderId") or "")
+                if order_id and client_id.startswith(f"{self.bot_order_prefix}_"):
+                    self.spot_holdings.record_order_fill(
+                        symbol=symbol, side=side, order_id=order_id,
+                        executed_quantity=exec_qty,
+                    )
                 if side == "BUY" and exec_qty > 0:
                     if avg_price <= 0:
                         avg_price = self._spot_last_prices.get(symbol, Decimal("0"))
@@ -826,6 +837,21 @@ class BinanceFuturesClient:
                     self._spot_position_quantities[symbol] = exec_qty
 
         return normalized
+
+    def observe_spot_execution_report(self, event: dict[str, Any]) -> None:
+        if not self.spot_mode or str(event.get("e", "")).lower() != "executionreport":
+            return
+        client_id = str(event.get("c", "") or "")
+        if not client_id.startswith(f"{self.bot_order_prefix}_"):
+            return
+        symbol = str(event.get("s", "") or "").upper().strip()
+        side = str(event.get("S", "") or "").upper().strip()
+        order_id = str(event.get("i", "") or "")
+        if symbol and order_id and side in {"BUY", "SELL"}:
+            self.spot_holdings.record_order_fill(
+                symbol=symbol, side=side, order_id=order_id,
+                executed_quantity=Decimal(str(event.get("z", "0") or "0")),
+            )
 
     @staticmethod
     def _normalize_spot_order_response(

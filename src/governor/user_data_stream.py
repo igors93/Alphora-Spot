@@ -433,6 +433,9 @@ class UserDataStreamHub:
                 return
             if isinstance(payload.get("event"), dict):
                 message = payload["event"]
+                observer = getattr(self.client, "observe_spot_execution_report", None)
+                if observer is not None:
+                    observer(message)
         self.ingest_message(message, received_at=now)
         self._maybe_log_heartbeat(now)
 

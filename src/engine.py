@@ -6,6 +6,7 @@ engine also runs from an installed wheel, where ``main.py`` does not exist.
 
 import logging
 import os
+from pathlib import Path
 
 from binance.futures_client import BinanceFuturesClient
 from config import (
@@ -59,6 +60,10 @@ def main() -> None:
             api_key=config.api_key,
             api_secret=config.api_secret,
             mutation_enabled=config.mutations_enabled,
+            spot_holdings_path=str(
+                Path(config.runtime_dir) / f"spot_holdings_{config.environment_key}.json"
+            ),
+            bot_order_prefix=config.bot_order_prefix,
         )
         governor = AlphoraGovernor.from_config(config, client)
         effective_symbols = [item.symbol for item in getattr(governor, "symbol_configs", [])]

@@ -30,6 +30,10 @@ def make_client(config: AppConfig, *, mutation_enabled: bool = False) -> Binance
         api_key=config.api_key,
         api_secret=config.api_secret,
         mutation_enabled=mutation_enabled,
+        spot_holdings_path=str(
+            Path(config.runtime_dir) / f"spot_holdings_{config.environment_key}.json"
+        ),
+        bot_order_prefix=config.bot_order_prefix,
     )
 
 
