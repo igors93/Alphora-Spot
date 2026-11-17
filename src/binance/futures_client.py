@@ -556,6 +556,8 @@ class BinanceFuturesClient:
     def change_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
         self._ensure_mutation_allowed("change_leverage")
         if self.spot_mode:
+            if leverage != 1:
+                raise ValueError("Spot nao permite alavancagem diferente de 1")
             return {"symbol": symbol, "leverage": 1}
         return self._signed_request(
             "POST",
@@ -799,6 +801,10 @@ class BinanceFuturesClient:
         return clean
 
     def _spot_new_order(self, **params) -> dict[str, Any]:
+        if str(params.get("side", "")).upper() == "SELL" and str(
+            params.get("reduceOnly", "")
+        ).lower() != "true":
+            raise ValueError("Venda Spot exige acao explicita de fechamento")
         clean_params = self._strip_futures_only_order_params(params)
         symbol = str(clean_params.get("symbol", "") or "").upper().strip()
         side = str(clean_params.get("side", "") or "").upper().strip()

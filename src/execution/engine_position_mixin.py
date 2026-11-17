@@ -70,6 +70,8 @@ class EnginePositionMixin(EngineMixinHost):
         planned_quantity: Decimal | None,
         trade_plan_id: str | None,
     ) -> tuple[Decimal, str, str] | PositionExecutionResult:
+        if getattr(self.client, "spot_mode", False) and action is TradeAction.OPEN_SHORT:
+            return PositionExecutionResult.blocked("SPOT_OPEN_SHORT_FORBIDDEN")
         if self.config.mutations_enabled:
             try:
                 pending_entry = self.entry_intent_store.load()

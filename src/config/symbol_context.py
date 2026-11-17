@@ -136,6 +136,12 @@ def load_symbol_profiles(
         for raw_profile in raw_profiles
     ]
     validate_symbol_profiles(profiles)
+    if base_config is not None and base_config.base_url in {
+        "https://api.binance.com", "https://testnet.binance.vision"
+    }:
+        for profile in profiles:
+            if profile.enabled and profile.leverage != 1:
+                raise ValueError(f"{profile.symbol}: Spot exige leverage=1")
     return profiles
 
 

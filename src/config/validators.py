@@ -108,6 +108,17 @@ def _validate_symbols_and_sizing(config: AppConfig) -> None:
     if config.leverage > 5:
         raise ValueError("Por seguranca, esta versao limita a alavancagem a no maximo 5x")
 
+    if urlparse(config.base_url).netloc.lower() in {
+        "api.binance.com", "testnet.binance.vision"
+    }:
+        if config.leverage != 1:
+            raise ValueError("Spot exige ALPHORA_LEVERAGE=1")
+        if (
+            config.strategy_module != "strategies.futures.fixed.spot_capital_rotation"
+            or config.strategy_class != "SpotCapitalRotationStrategy"
+        ):
+            raise ValueError("Estrategia Futures nao e compativel com Spot")
+
     _validate_positive_number(
         "ALPHORA_POSITION_NOTIONAL_USDT",
         config.position_notional_usdt,
