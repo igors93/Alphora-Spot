@@ -156,6 +156,9 @@ def build_governor_components(
     enabled_symbols = tuple(item for item in symbol_configs if item.enabled)
     if not enabled_symbols:
         raise ValueError("Governador exige pelo menos um perfil habilitado")
+    if getattr(client, "spot_mode", False):
+        for symbol_config in enabled_symbols:
+            client.register_bot_order_prefix(symbol_config.bot_order_prefix)
 
     logger = get_logger("governor.alphora_governor")
     settings = portfolio_settings or PortfolioRiskSettings()

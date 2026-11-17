@@ -113,6 +113,7 @@ class BinanceFuturesClient:
         self._spot_algo_orders: dict[str, dict[str, Any]] = {}
         self.spot_holdings = SpotHoldingsStore(spot_holdings_path) if self.spot_mode else None
         self.bot_order_prefix = bot_order_prefix.upper().strip()
+        self.bot_order_prefixes = {self.bot_order_prefix}
         self._last_listen_key = ""
 
         if not self.base_url.startswith("https://"):
@@ -491,19 +492,28 @@ class BinanceFuturesClient:
             params=params,
         )
 
-    def cancel_all_open_orders(self, symbol: str) -> dict[str, Any]:
+    def cancel_all_open_orders(
+        self, symbol: str, *, include_external: bool = False,
+        external_confirmation: str = "",
+    ) -> dict[str, Any]:
         self._ensure_mutation_allowed("cancel_all_open_orders")
         if self.spot_mode:
-            try:
+            if include_external:
+                if external_confirmation != "CANCEL_EXTERNAL_SPOT_ORDERS":
+                    raise ValueError("Confirmacao especifica obrigatoria para ordens externas")
                 return self._signed_request(
-                    "DELETE",
-                    "/api/v3/openOrders",
-                    params={"symbol": symbol},
+                    "DELETE", "/api/v3/openOrders", params={"symbol": symbol},
                 )
-            except BinanceFuturesAPIError as error:
-                if error.code == -2011:
-                    return {"code": 200, "msg": "No open orders to cancel"}
-                raise
+            canceled = []
+            for order in self.open_orders(symbol):
+                client_id = str(order.get("clientOrderId") or "")
+                if not self._is_spot_bot_order_id(client_id):
+                    continue
+                canceled.append(self.cancel_order(
+                    symbol=symbol, order_id=order.get("orderId"),
+                    orig_client_order_id=client_id,
+                ))
+            return {"canceled": canceled}
         return self._signed_request(
             "DELETE",
             "/fapi/v1/allOpenOrders",
@@ -516,7 +526,7 @@ class BinanceFuturesClient:
             responses = []
             seen_lists: set[int] = set()
             for order in self.open_algo_orders(symbol):
-                if not str(order.get("clientAlgoId", "")).startswith("ALPHORA_"):
+                if not self._is_spot_bot_order_id(str(order.get("clientAlgoId", ""))):
                     continue
                 order_list_id = int(order["orderListId"])
                 if order_list_id in seen_lists:
@@ -848,7 +858,7 @@ class BinanceFuturesClient:
 
     def _record_spot_order_progress(self, order: dict[str, Any]) -> None:
         client_id = str(order.get("clientOrderId") or "")
-        if not client_id.startswith(f"{self.bot_order_prefix}_"):
+        if not self._is_spot_bot_order_id(client_id):
             return
         symbol = str(order.get("symbol") or "").upper().strip()
         side = str(order.get("side") or "").upper().strip()
@@ -872,7 +882,7 @@ class BinanceFuturesClient:
         if not self.spot_mode or str(event.get("e", "")).lower() != "executionreport":
             return
         client_id = str(event.get("c", "") or "")
-        if not client_id.startswith(f"{self.bot_order_prefix}_"):
+        if not self._is_spot_bot_order_id(client_id):
             return
         symbol = str(event.get("s", "") or "").upper().strip()
         side = str(event.get("S", "") or "").upper().strip()
@@ -890,6 +900,14 @@ class BinanceFuturesClient:
                     asset=str(event.get("N") or "").upper(),
                     amount=Decimal(str(event.get("n", "0") or "0")),
                 )
+
+    def register_bot_order_prefix(self, prefix: str) -> None:
+        normalized = str(prefix or "").upper().strip()
+        if normalized:
+            self.bot_order_prefixes.add(normalized)
+
+    def _is_spot_bot_order_id(self, client_id: str) -> bool:
+        return any(client_id.startswith(f"{prefix}_") for prefix in self.bot_order_prefixes)
 
     @staticmethod
     def _normalize_spot_order_response(
