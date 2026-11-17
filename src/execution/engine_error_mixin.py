@@ -177,4 +177,17 @@ class EngineErrorMixin(EngineMixinHost):
             if asset.get("asset") == "USDT":
                 return asset
 
+        for balance in account_info.get("balances", []):
+            if balance.get("asset") == "USDT":
+                free_dec = Decimal(str(balance.get("free", "0") or "0"))
+                locked_dec = Decimal(str(balance.get("locked", "0") or "0"))
+                total_dec = free_dec + locked_dec
+                return {
+                    "asset": "USDT",
+                    "walletBalance": str(total_dec),
+                    "availableBalance": str(free_dec),
+                    "marginBalance": str(total_dec),
+                    "unrealizedProfit": "0",
+                }
+
         return None

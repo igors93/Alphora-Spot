@@ -21,6 +21,8 @@ from config.smart_settings import SmartExecutionSettings
 
 TESTNET_BASE_URL = "https://demo-fapi.binance.com"
 REAL_BASE_URL = "https://fapi.binance.com"
+SPOT_TESTNET_BASE_URL = "https://testnet.binance.vision"
+SPOT_REAL_BASE_URL = "https://api.binance.com"
 
 
 class ExecutionFields(TypedDict):
@@ -75,8 +77,16 @@ def load_execution_fields() -> ExecutionFields:
             False,
         ),
         "base_url": _base_url(environment),
-        "api_key": _get_env("BINANCE_FUTURES_API_KEY", ""),
-        "api_secret": _get_env("BINANCE_FUTURES_API_SECRET", ""),
+        "api_key": (
+            _get_env("BINANCE_SPOT_API_KEY", "")
+            or _get_env("BINANCE_API_KEY", "")
+            or _get_env("BINANCE_FUTURES_API_KEY", "")
+        ),
+        "api_secret": (
+            _get_env("BINANCE_SPOT_API_SECRET", "")
+            or _get_env("BINANCE_API_SECRET", "")
+            or _get_env("BINANCE_FUTURES_API_SECRET", "")
+        ),
         "bot_order_prefix": _get_env("ALPHORA_BOT_ORDER_PREFIX", "ALPHORA"),
         "cancel_open_orders_when_flat": _get_bool("ALPHORA_CANCEL_OPEN_ORDERS_WHEN_FLAT", True),
         "recover_on_boot": _get_bool("ALPHORA_RECOVER_ON_BOOT", True),
@@ -233,9 +243,18 @@ def load_environment(
 
 
 def _base_url(environment: ExchangeEnvironment) -> str:
-    configured_base_url = _get_env("BINANCE_FUTURES_BASE_URL", "")
+    configured_base_url = (
+        _get_env("BINANCE_SPOT_BASE_URL", "")
+        or _get_env("BINANCE_BASE_URL", "")
+        or _get_env("BINANCE_FUTURES_BASE_URL", "")
+    )
     if configured_base_url:
         return configured_base_url
+    market_type = _get_env("ALPHORA_MARKET_TYPE", "").upper().strip()
+    if market_type == "SPOT":
+        if environment is ExchangeEnvironment.TESTNET:
+            return SPOT_TESTNET_BASE_URL
+        return SPOT_REAL_BASE_URL
     if environment is ExchangeEnvironment.TESTNET:
         return TESTNET_BASE_URL
     return REAL_BASE_URL
@@ -243,6 +262,8 @@ def _base_url(environment: ExchangeEnvironment) -> str:
 
 __all__ = [
     "REAL_BASE_URL",
+    "SPOT_REAL_BASE_URL",
+    "SPOT_TESTNET_BASE_URL",
     "TESTNET_BASE_URL",
     "ExecutionFields",
     "load_environment",

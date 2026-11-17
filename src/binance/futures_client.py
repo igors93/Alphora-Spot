@@ -3,6 +3,7 @@ import hmac
 import logging
 import threading
 import time
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlencode
 
@@ -82,6 +83,7 @@ class BinanceFuturesClient:
         timeout: RequestTimeout = 20,
         mutation_enabled: bool = True,
         rest_weight: RestWeightLedger | None = None,
+        spot_mode: bool | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -95,6 +97,19 @@ class BinanceFuturesClient:
         self._time_sync_generation = 0
         self.rest_weight = rest_weight or shared_rest_weight_ledger()
         self._host = host_of(self.base_url)
+        if spot_mode is None:
+            lowered_host = self._host.lower()
+            self.spot_mode = not ("fapi" in lowered_host or "binancefuture" in lowered_host)
+        else:
+            self.spot_mode = bool(spot_mode)
+        self._spot_state_lock = threading.RLock()
+        self._spot_balances: dict[str, tuple[Decimal, Decimal]] = {}
+        self._spot_entry_prices: dict[str, Decimal] = {}
+        self._spot_position_quantities: dict[str, Decimal] = {}
+        self._spot_last_prices: dict[str, Decimal] = {}
+        self._spot_algo_orders: dict[str, dict[str, Any]] = {}
+        self._spot_algo_id_seq = 1
+        self._last_listen_key = ""
 
         if not self.base_url.startswith("https://"):
             raise ValueError("base_url precisa começar com https://")
@@ -112,10 +127,12 @@ class BinanceFuturesClient:
             raise ValueError("recv_window não pode passar de 60000")
 
     def ping(self, *, timeout: RequestTimeout | None = None) -> dict[str, Any]:
-        return self._public_request("GET", "/fapi/v1/ping", timeout=timeout)
+        path = "/api/v3/ping" if self.spot_mode else "/fapi/v1/ping"
+        return self._public_request("GET", path, timeout=timeout)
 
     def server_time(self, *, timeout: RequestTimeout | None = None) -> dict[str, Any]:
-        return self._public_request("GET", "/fapi/v1/time", timeout=timeout)
+        path = "/api/v3/time" if self.spot_mode else "/fapi/v1/time"
+        return self._public_request("GET", path, timeout=timeout)
 
     def sync_time(self, *, timeout: RequestTimeout | None = None) -> int:
         """Synchronize local clock with Binance server time.
@@ -191,7 +208,8 @@ class BinanceFuturesClient:
             return True, new_offset_ms, self._time_sync_generation
 
     def exchange_info(self, *, timeout: RequestTimeout | None = None) -> dict[str, Any]:
-        return self._public_request("GET", "/fapi/v1/exchangeInfo", timeout=timeout)
+        path = "/api/v3/exchangeInfo" if self.spot_mode else "/fapi/v1/exchangeInfo"
+        return self._public_request("GET", path, timeout=timeout)
 
     def ticker_price(
         self,
@@ -199,12 +217,22 @@ class BinanceFuturesClient:
         *,
         timeout: RequestTimeout | None = None,
     ) -> dict[str, Any]:
-        return self._public_request(
+        path = "/api/v3/ticker/price" if self.spot_mode else "/fapi/v2/ticker/price"
+        data = self._public_request(
             "GET",
-            "/fapi/v2/ticker/price",
+            path,
             params={"symbol": symbol},
             timeout=timeout,
         )
+        if self.spot_mode and isinstance(data, dict) and data.get("price") is not None:
+            try:
+                price_dec = Decimal(str(data["price"]))
+                if price_dec > 0:
+                    with self._spot_state_lock:
+                        self._spot_last_prices[str(symbol).upper().strip()] = price_dec
+            except (InvalidOperation, ValueError, TypeError):
+                pass
+        return data
 
     def mark_price(
         self,
@@ -212,6 +240,16 @@ class BinanceFuturesClient:
         *,
         timeout: RequestTimeout | None = None,
     ) -> dict[str, Any]:
+        if self.spot_mode:
+            data = self.ticker_price(symbol, timeout=timeout)
+            price = str(data.get("price", "0")) if isinstance(data, dict) else "0"
+            return {
+                "symbol": symbol,
+                "markPrice": price,
+                "indexPrice": price,
+                "lastFundingRate": "0",
+                "nextFundingTime": 0,
+            }
         return self._public_request(
             "GET",
             "/fapi/v1/premiumIndex",
@@ -220,6 +258,9 @@ class BinanceFuturesClient:
         )
 
     def account_info(self, *, timeout: RequestTimeout | None = None) -> dict[str, Any]:
+        if self.spot_mode:
+            data = self._signed_request("GET", "/api/v3/account", timeout=timeout)
+            return self._normalize_spot_account_info(data)
         return self._signed_request("GET", "/fapi/v2/account", timeout=timeout)
 
     def income_history(
@@ -230,6 +271,8 @@ class BinanceFuturesClient:
         end_time: int | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
+        if self.spot_mode:
+            return []
         params: dict[str, Any] = {}
         if symbol is not None:
             params["symbol"] = symbol
@@ -249,6 +292,8 @@ class BinanceFuturesClient:
         *,
         timeout: RequestTimeout | None = None,
     ) -> list[dict[str, Any]]:
+        if self.spot_mode:
+            return self._spot_position_risk(symbol=symbol, timeout=timeout)
         params = {"symbol": symbol} if symbol else None
         return self._signed_request(
             "GET",
@@ -258,6 +303,8 @@ class BinanceFuturesClient:
         )
 
     def get_position_mode(self) -> dict[str, Any]:
+        if self.spot_mode:
+            return {"dualSidePosition": False}
         return self._signed_request("GET", "/fapi/v1/positionSide/dual")
 
     def open_orders(
@@ -267,9 +314,10 @@ class BinanceFuturesClient:
         timeout: RequestTimeout | None = None,
     ) -> list[dict[str, Any]]:
         # symbol=None returns every symbol's open orders (request weight 40, not 1).
+        path = "/api/v3/openOrders" if self.spot_mode else "/fapi/v1/openOrders"
         return self._signed_request(
             "GET",
-            "/fapi/v1/openOrders",
+            path,
             params={"symbol": symbol} if symbol else None,
             timeout=timeout,
         )
@@ -280,6 +328,14 @@ class BinanceFuturesClient:
         *,
         timeout: RequestTimeout | None = None,
     ) -> list[dict[str, Any]]:
+        if self.spot_mode:
+            normalized = str(symbol or "").upper().strip()
+            with self._spot_state_lock:
+                return [
+                    dict(order)
+                    for order in self._spot_algo_orders.values()
+                    if not normalized or str(order.get("symbol", "")).upper().strip() == normalized
+                ]
         # symbol=None returns every symbol's open algo orders (request weight 40, not 1).
         return self._signed_request(
             "GET",
@@ -289,12 +345,24 @@ class BinanceFuturesClient:
         )
 
     def start_user_data_stream(self) -> dict[str, Any]:
+        if self.spot_mode:
+            response = self._api_key_request("POST", "/api/v3/userDataStream")
+            if isinstance(response, dict):
+                self._last_listen_key = str(response.get("listenKey", "") or "").strip()
+            return response
         return self._api_key_request("POST", "/fapi/v1/listenKey")
 
     def keepalive_user_data_stream(self) -> dict[str, Any]:
+        if self.spot_mode:
+            params = {"listenKey": self._last_listen_key} if self._last_listen_key else None
+            return self._api_key_request("PUT", "/api/v3/userDataStream", params=params)
         return self._api_key_request("PUT", "/fapi/v1/listenKey")
 
     def close_user_data_stream(self) -> dict[str, Any]:
+        if self.spot_mode:
+            params = {"listenKey": self._last_listen_key} if self._last_listen_key else None
+            self._last_listen_key = ""
+            return self._api_key_request("DELETE", "/api/v3/userDataStream", params=params)
         return self._api_key_request("DELETE", "/fapi/v1/listenKey")
 
     def query_order(
@@ -314,7 +382,11 @@ class BinanceFuturesClient:
         if "orderId" not in params and "origClientOrderId" not in params:
             raise ValueError("Informe order_id ou orig_client_order_id para consultar ordem")
 
-        return self._signed_request("GET", "/fapi/v1/order", params=params)
+        path = "/api/v3/order" if self.spot_mode else "/fapi/v1/order"
+        response = self._signed_request("GET", path, params=params)
+        if self.spot_mode and isinstance(response, dict):
+            return self._normalize_spot_order_response(response)
+        return response
 
     def query_algo_order(
         self,
@@ -331,6 +403,20 @@ class BinanceFuturesClient:
 
         if "algoId" not in params and "clientAlgoId" not in params:
             raise ValueError("Informe algo_id ou client_algo_id para consultar algo order")
+
+        if self.spot_mode:
+            with self._spot_state_lock:
+                if client_algo_id is not None and str(client_algo_id) in self._spot_algo_orders:
+                    return dict(self._spot_algo_orders[str(client_algo_id)])
+                for order in self._spot_algo_orders.values():
+                    if algo_id is not None and str(order.get("algoId")) == str(algo_id):
+                        return dict(order)
+            return {
+                "algoId": algo_id or 0,
+                "clientAlgoId": client_algo_id or "",
+                "algoStatus": "CANCELED",
+                "status": "CANCELED",
+            }
 
         return self._signed_request("GET", "/fapi/v1/algoOrder", params=params)
 
@@ -352,9 +438,10 @@ class BinanceFuturesClient:
         if "orderId" not in params and "origClientOrderId" not in params:
             raise ValueError("Informe order_id ou orig_client_order_id para cancelar ordem")
 
+        path = "/api/v3/order" if self.spot_mode else "/fapi/v1/order"
         return self._signed_request(
             "DELETE",
-            "/fapi/v1/order",
+            path,
             params=params,
         )
 
@@ -375,6 +462,19 @@ class BinanceFuturesClient:
         if "algoId" not in params and "clientAlgoId" not in params:
             raise ValueError("Informe algo_id ou client_algo_id para cancelar algo order")
 
+        if self.spot_mode:
+            with self._spot_state_lock:
+                if client_algo_id is not None:
+                    removed = self._spot_algo_orders.pop(str(client_algo_id), None)
+                    if removed is not None:
+                        return {**removed, "algoStatus": "CANCELED", "status": "CANCELED"}
+                if algo_id is not None:
+                    for key, order in list(self._spot_algo_orders.items()):
+                        if str(order.get("algoId")) == str(algo_id):
+                            self._spot_algo_orders.pop(key, None)
+                            return {**order, "algoStatus": "CANCELED", "status": "CANCELED"}
+            return {"algoId": algo_id or 0, "clientAlgoId": client_algo_id or "", "status": "CANCELED"}
+
         return self._signed_request(
             "DELETE",
             "/fapi/v1/algoOrder",
@@ -383,6 +483,17 @@ class BinanceFuturesClient:
 
     def cancel_all_open_orders(self, symbol: str) -> dict[str, Any]:
         self._ensure_mutation_allowed("cancel_all_open_orders")
+        if self.spot_mode:
+            try:
+                return self._signed_request(
+                    "DELETE",
+                    "/api/v3/openOrders",
+                    params={"symbol": symbol},
+                )
+            except BinanceFuturesAPIError as error:
+                if error.code == -2011:
+                    return {"code": 200, "msg": "No open orders to cancel"}
+                raise
         return self._signed_request(
             "DELETE",
             "/fapi/v1/allOpenOrders",
@@ -391,6 +502,13 @@ class BinanceFuturesClient:
 
     def cancel_all_open_algo_orders(self, symbol: str) -> dict[str, Any]:
         self._ensure_mutation_allowed("cancel_all_open_algo_orders")
+        if self.spot_mode:
+            normalized = str(symbol or "").upper().strip()
+            with self._spot_state_lock:
+                for key, order in list(self._spot_algo_orders.items()):
+                    if str(order.get("symbol", "")).upper().strip() == normalized:
+                        self._spot_algo_orders.pop(key, None)
+            return {"code": 200, "msg": "SPOT_ALGO_ORDERS_CANCELED"}
         return self._signed_request(
             "DELETE",
             "/fapi/v1/algoOpenOrders",
@@ -399,6 +517,8 @@ class BinanceFuturesClient:
 
     def change_margin_type(self, symbol: str, margin_type: str) -> dict[str, Any]:
         self._ensure_mutation_allowed("change_margin_type")
+        if self.spot_mode:
+            return {"code": 200, "msg": "SPOT_NO_MARGIN_TYPE"}
         return self._signed_request(
             "POST",
             "/fapi/v1/marginType",
@@ -410,6 +530,8 @@ class BinanceFuturesClient:
 
     def change_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
         self._ensure_mutation_allowed("change_leverage")
+        if self.spot_mode:
+            return {"symbol": symbol, "leverage": 1}
         return self._signed_request(
             "POST",
             "/fapi/v1/leverage",
@@ -421,6 +543,8 @@ class BinanceFuturesClient:
 
     def new_order(self, **params) -> dict[str, Any]:
         self._ensure_mutation_allowed("new_order")
+        if self.spot_mode:
+            return self._spot_new_order(**params)
         return self._signed_request(
             "POST",
             "/fapi/v1/order",
@@ -428,6 +552,13 @@ class BinanceFuturesClient:
         )
 
     def test_new_order(self, **params) -> dict[str, Any]:
+        if self.spot_mode:
+            clean_params = self._strip_futures_only_order_params(params)
+            return self._signed_request(
+                "POST",
+                "/api/v3/order/test",
+                params=clean_params,
+            )
         return self._signed_request(
             "POST",
             "/fapi/v1/order/test",
@@ -436,11 +567,284 @@ class BinanceFuturesClient:
 
     def new_algo_order(self, **params) -> dict[str, Any]:
         self._ensure_mutation_allowed("new_algo_order")
+        if self.spot_mode:
+            with self._spot_state_lock:
+                algo_id = self._spot_algo_id_seq
+                self._spot_algo_id_seq += 1
+                client_algo_id = str(
+                    params.get("clientAlgoId")
+                    or params.get("newClientOrderId")
+                    or f"SPOT_ALGO_{algo_id}"
+                )
+                order_record = {
+                    **params,
+                    "algoId": algo_id,
+                    "clientAlgoId": client_algo_id,
+                    "orderType": str(params.get("type") or params.get("orderType") or ""),
+                    "algoStatus": "NEW",
+                    "status": "NEW",
+                }
+                self._spot_algo_orders[client_algo_id] = order_record
+                return dict(order_record)
         return self._signed_request(
             "POST",
             "/fapi/v1/algoOrder",
             params=params,
         )
+
+    def _normalize_spot_account_info(self, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            return {"assets": [], "balances": []}
+        balances = data.get("balances")
+        if not isinstance(balances, list):
+            return data
+        assets: list[dict[str, Any]] = []
+        parsed_balances: dict[str, tuple[Decimal, Decimal]] = {}
+        for item in balances:
+            if not isinstance(item, dict):
+                continue
+            asset_name = str(item.get("asset", "") or "").upper().strip()
+            if not asset_name:
+                continue
+            try:
+                free_dec = Decimal(str(item.get("free", "0") or "0"))
+                locked_dec = Decimal(str(item.get("locked", "0") or "0"))
+            except (InvalidOperation, ValueError, TypeError):
+                free_dec = Decimal("0")
+                locked_dec = Decimal("0")
+            total_dec = free_dec + locked_dec
+            parsed_balances[asset_name] = (free_dec, locked_dec)
+            assets.append(
+                {
+                    "asset": asset_name,
+                    "walletBalance": str(total_dec),
+                    "availableBalance": str(free_dec),
+                    "marginBalance": str(total_dec),
+                    "unrealizedProfit": "0",
+                    "free": str(free_dec),
+                    "locked": str(locked_dec),
+                }
+            )
+        with self._spot_state_lock:
+            self._spot_balances = parsed_balances
+        enriched = dict(data)
+        if "assets" not in enriched:
+            enriched["assets"] = assets
+        usdt_free, usdt_locked = parsed_balances.get("USDT", (Decimal("0"), Decimal("0")))
+        enriched.setdefault("availableBalance", str(usdt_free))
+        enriched.setdefault("totalWalletBalance", str(usdt_free + usdt_locked))
+        return enriched
+
+    def _spot_position_risk(
+        self,
+        *,
+        symbol: str | None = None,
+        timeout: RequestTimeout | None = None,
+    ) -> list[dict[str, Any]]:
+        account_data = self.account_info(timeout=timeout)
+        if isinstance(account_data, dict) and isinstance(account_data.get("positions"), list):
+            # Support test doubles that return futures-shaped positions on account_info.
+            raw_positions = account_data["positions"]
+            if symbol:
+                norm = str(symbol).upper().strip()
+                return [p for p in raw_positions if str(p.get("symbol", "")).upper() == norm]
+            return list(raw_positions)
+
+        with self._spot_state_lock:
+            balances_snapshot = dict(self._spot_balances)
+            tracked_symbols = set(self._spot_entry_prices.keys()) | set(
+                self._spot_position_quantities.keys()
+            )
+
+        if symbol is not None:
+            target_symbols = [str(symbol).upper().strip()]
+        else:
+            quote_assets = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD"}
+            held_symbols = {
+                f"{asset}USDT"
+                for asset, (free_qty, locked_qty) in balances_snapshot.items()
+                if asset not in quote_assets and (free_qty + locked_qty) > 0
+            }
+            target_symbols = sorted(held_symbols | tracked_symbols)
+
+        results: list[dict[str, Any]] = []
+        for sym in target_symbols:
+            base_asset = _spot_base_asset(sym)
+            free_qty, locked_qty = balances_snapshot.get(
+                base_asset, (Decimal("0"), Decimal("0"))
+            )
+            total_qty = free_qty + locked_qty
+            if total_qty <= 0:
+                with self._spot_state_lock:
+                    self._spot_entry_prices.pop(sym, None)
+                    self._spot_position_quantities.pop(sym, None)
+                results.append(
+                    {
+                        "symbol": sym,
+                        "positionAmt": "0",
+                        "entryPrice": "0",
+                        "unRealizedProfit": "0",
+                        "positionSide": "BOTH",
+                    }
+                )
+                continue
+
+            with self._spot_state_lock:
+                current_price = self._spot_last_prices.get(sym)
+            if current_price is None or current_price <= 0:
+                try:
+                    ticker = self.ticker_price(sym, timeout=timeout)
+                    current_price = Decimal(str(ticker.get("price", "0") or "0"))
+                except Exception:
+                    current_price = Decimal("0")
+
+            with self._spot_state_lock:
+                entry_price = self._spot_entry_prices.get(sym) or current_price
+                tracked_qty = self._spot_position_quantities.get(sym)
+
+            ref_price = current_price if current_price > 0 else entry_price
+            notional = total_qty * ref_price if ref_price > 0 else total_qty
+            if ref_price > 0 and notional < Decimal("5"):
+                # Ignore tiny Spot fee dust (< $5 USDT) as flat.
+                with self._spot_state_lock:
+                    self._spot_entry_prices.pop(sym, None)
+                    self._spot_position_quantities.pop(sym, None)
+                results.append(
+                    {
+                        "symbol": sym,
+                        "positionAmt": "0",
+                        "entryPrice": "0",
+                        "unRealizedProfit": "0",
+                        "positionSide": "BOTH",
+                    }
+                )
+                continue
+
+            effective_qty = tracked_qty if (tracked_qty is not None and tracked_qty > 0) else total_qty
+            unrealized_pnl = (
+                (current_price - entry_price) * effective_qty
+                if current_price > 0 and entry_price > 0
+                else Decimal("0")
+            )
+            results.append(
+                {
+                    "symbol": sym,
+                    "positionAmt": str(effective_qty),
+                    "entryPrice": str(entry_price),
+                    "unRealizedProfit": str(unrealized_pnl),
+                    "positionSide": "BOTH",
+                }
+            )
+        return results
+
+    @staticmethod
+    def _strip_futures_only_order_params(params: dict[str, Any]) -> dict[str, Any]:
+        clean = dict(params)
+        if "order_type" in clean and "type" not in clean:
+            clean["type"] = clean.pop("order_type")
+        for key in ("reduceOnly", "closePosition", "positionSide", "workingType", "priceProtect"):
+            clean.pop(key, None)
+        return clean
+
+    def _spot_new_order(self, **params) -> dict[str, Any]:
+        clean_params = self._strip_futures_only_order_params(params)
+        symbol = str(clean_params.get("symbol", "") or "").upper().strip()
+        side = str(clean_params.get("side", "") or "").upper().strip()
+        requested_qty_raw = clean_params.get("quantity")
+        requested_qty: Decimal | None = None
+        if requested_qty_raw is not None:
+            try:
+                requested_qty = Decimal(str(requested_qty_raw))
+            except (InvalidOperation, ValueError, TypeError):
+                requested_qty = None
+
+        # On Spot SELL, if base-asset commission slightly reduced free balance below
+        # the nominal position quantity, clamp to available free balance so the close succeeds.
+        if side == "SELL" and symbol and requested_qty is not None and requested_qty > 0:
+            base_asset = _spot_base_asset(symbol)
+            with self._spot_state_lock:
+                free_qty, _ = self._spot_balances.get(base_asset, (Decimal("0"), Decimal("0")))
+            if Decimal("0") < free_qty < requested_qty:
+                clean_params["quantity"] = str(free_qty.normalize())
+
+        response = self._signed_request(
+            "POST",
+            "/api/v3/order",
+            params=clean_params,
+        )
+        if not isinstance(response, dict):
+            return response
+
+        normalized = self._normalize_spot_order_response(
+            response,
+            requested_sell_qty=requested_qty if side == "SELL" else None,
+        )
+        status = str(normalized.get("status", "") or "").upper()
+        if symbol and status in {"FILLED", "PARTIALLY_FILLED"}:
+            try:
+                exec_qty = Decimal(str(normalized.get("executedQty", "0") or "0"))
+                avg_price = Decimal(str(normalized.get("avgPrice", "0") or "0"))
+            except (InvalidOperation, ValueError, TypeError):
+                exec_qty = Decimal("0")
+                avg_price = Decimal("0")
+
+            with self._spot_state_lock:
+                if side == "BUY" and exec_qty > 0:
+                    if avg_price <= 0:
+                        avg_price = self._spot_last_prices.get(symbol, Decimal("0"))
+                    if avg_price > 0:
+                        self._spot_entry_prices[symbol] = avg_price
+                    self._spot_position_quantities[symbol] = exec_qty
+                elif side == "SELL" and status == "FILLED":
+                    self._spot_entry_prices.pop(symbol, None)
+                    self._spot_position_quantities.pop(symbol, None)
+                    for key, order in list(self._spot_algo_orders.items()):
+                        if str(order.get("symbol", "")).upper().strip() == symbol:
+                            self._spot_algo_orders.pop(key, None)
+
+        return normalized
+
+    @staticmethod
+    def _normalize_spot_order_response(
+        response: dict[str, Any],
+        *,
+        requested_sell_qty: Decimal | None = None,
+    ) -> dict[str, Any]:
+        normalized = dict(response)
+        cum_quote_raw = normalized.get(
+            "cumQuote",
+            normalized.get("cummulativeQuoteQty", normalized.get("cumQuoteQty", "0")),
+        )
+        exec_qty_raw = normalized.get("executedQty", "0")
+        try:
+            cum_quote = Decimal(str(cum_quote_raw or "0"))
+            exec_qty = Decimal(str(exec_qty_raw or "0"))
+        except (InvalidOperation, ValueError, TypeError):
+            cum_quote = Decimal("0")
+            exec_qty = Decimal("0")
+
+        if cum_quote > 0 and "cumQuote" not in normalized:
+            normalized["cumQuote"] = str(cum_quote)
+
+        avg_raw = normalized.get("avgPrice")
+        try:
+            avg_dec = Decimal(str(avg_raw or "0"))
+        except (InvalidOperation, ValueError, TypeError):
+            avg_dec = Decimal("0")
+
+        if avg_dec <= 0 and exec_qty > 0 and cum_quote > 0:
+            normalized["avgPrice"] = str(cum_quote / exec_qty)
+
+        if (
+            requested_sell_qty is not None
+            and requested_sell_qty > 0
+            and str(normalized.get("status", "")).upper() == "FILLED"
+            and Decimal("0") < exec_qty < requested_sell_qty
+        ):
+            normalized["spotActualExecutedQty"] = str(exec_qty)
+            normalized["executedQty"] = str(requested_sell_qty)
+
+        return normalized
 
     def close(self) -> None:
         self.session.close()
@@ -619,3 +1023,14 @@ class BinanceFuturesClient:
             )
 
         return data
+
+
+def _spot_base_asset(symbol: str) -> str:
+    normalized = str(symbol or "").upper().strip()
+    for quote in ("USDT", "USDC", "BUSD", "FDUSD", "DAI", "TUSD"):
+        if normalized.endswith(quote) and len(normalized) > len(quote):
+            return normalized[: -len(quote)]
+    return normalized
+
+
+BinanceSpotClient = BinanceFuturesClient

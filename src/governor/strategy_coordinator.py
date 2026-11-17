@@ -62,6 +62,7 @@ class StrategyCoordinator:
         self._states: dict[str, SymbolStrategyState] = {
             item.symbol: SymbolStrategyState() for item in symbol_configs
         }
+        self._rotation_board: dict[str, dict[str, Any]] = {}
         # Tracks last primary candle close_time_ms evaluated per symbol
         # (used for ON_PRIMARY_CANDLE_CLOSE policy — avoids repeating same candle)
         self._last_evaluated_close_ms: dict[str, int] = {}
@@ -399,6 +400,8 @@ class StrategyCoordinator:
     def _state_data_for_symbol(self, symbol_config: SymbolTradingConfig) -> dict[str, Any]:
         state = self.state_for_symbol(symbol_config.symbol).data
         state["symbol_strategy_params"] = dict(symbol_config.strategy_params)
+        state["rotation_board"] = self._rotation_board
+        state["monitored_symbols"] = [item.symbol for item in self.symbol_configs]
         state["symbol_operational_profile"] = {
             "position_notional_usdt": symbol_config.position_notional_usdt,
             "stop_loss_pct": symbol_config.stop_loss_pct,

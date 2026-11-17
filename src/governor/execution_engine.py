@@ -825,9 +825,65 @@ class ExecutionEngine:
             if self._enforce_paper_protections(engine):
                 return self.get_position(symbol_config).is_open
             return position.is_open
+        if position.is_open and bool(getattr(self.client, "spot_mode", False)):
+            if self._enforce_spot_protections(symbol_config, engine, position):
+                return self.get_position(symbol_config).is_open
         if position.is_open:
             engine.audit_protections(position, reason="governor_cycle")
         return position.is_open
+
+    def _enforce_spot_protections(
+        self,
+        symbol_config: SymbolTradingConfig,
+        engine: FuturesTradingEngine,
+        position: FuturesPosition,
+    ) -> bool:
+        """Close a live/testnet Spot position when its virtual stop/take is crossed."""
+        runtime_state = getattr(engine, "runtime_state", None)
+        stop_raw = getattr(runtime_state, "planned_stop_price", None) if runtime_state else None
+        take_raw = (
+            getattr(runtime_state, "planned_take_profit_price", None) if runtime_state else None
+        )
+        if not stop_raw and not take_raw:
+            return False
+
+        try:
+            trigger_price = Decimal(str(engine.get_trigger_reference_price()))
+        except Exception as error:
+            self.logger.warning(
+                "Spot protection check skipped: price unavailable | symbol=%s | error=%s",
+                engine.config.symbol,
+                error,
+            )
+            return False
+        if trigger_price <= 0:
+            return False
+
+        stop_price = Decimal(str(stop_raw)) if stop_raw else None
+        take_price = Decimal(str(take_raw)) if take_raw else None
+
+        stop_hit = stop_price is not None and stop_price > 0 and trigger_price <= stop_price
+        take_hit = take_price is not None and take_price > 0 and trigger_price >= take_price
+        if not stop_hit and not take_hit:
+            return False
+
+        exit_reason = "spot_stop_loss" if stop_hit else "spot_take_profit"
+        result = self.close_position(
+            symbol_config=symbol_config,
+            position=position,
+            reason=f"{exit_reason}: trigger_price={trigger_price}",
+            price=trigger_price,
+        )
+        engine.record_event(
+            "spot_protection_triggered",
+            symbol=engine.config.symbol,
+            exit_reason=exit_reason,
+            trigger_price=trigger_price,
+            stop_price=stop_price,
+            take_profit_price=take_price,
+            status=result.status.value,
+        )
+        return bool(result.position_changed)
 
     def _enforce_paper_protections(self, engine: FuturesTradingEngine) -> bool:
         """Close a paper position whose simulated stop/take was crossed.

@@ -85,6 +85,19 @@ def _extract_usdt_balance_field(account_info: dict, field: str) -> str | None:
             if value is None or value == "":
                 return None
             return str(value)
+
+    for balance in account_info.get("balances", []):
+        if balance.get("asset") == "USDT":
+            free_raw = balance.get("free")
+            locked_raw = balance.get("locked", "0")
+            if free_raw is None or free_raw == "":
+                return None
+            if field == "availableBalance":
+                return str(free_raw)
+            if field == "walletBalance":
+                from decimal import Decimal
+
+                return str(Decimal(str(free_raw)) + Decimal(str(locked_raw or "0")))
     return None
 
 

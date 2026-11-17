@@ -22,8 +22,9 @@ from config.sections.intelligence import (
 from config.validators import _validate_max_active_symbols, parse_symbols
 from module_paths import qualify_module_path
 
-DEFAULT_STRATEGY_MODULE = "strategies.futures.fixed.random_timed_signal"
-DEFAULT_STRATEGY_CLASS = "RandomTimedSignalStrategy"
+DEFAULT_STRATEGY_MODULE = "strategies.futures.fixed.spot_capital_rotation"
+DEFAULT_STRATEGY_CLASS = "SpotCapitalRotationStrategy"
+DEFAULT_ROTATION_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT")
 
 
 class SymbolFields(TypedDict):

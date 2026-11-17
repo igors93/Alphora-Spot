@@ -2038,7 +2038,15 @@ class EnginePositionMixin(EngineMixinHost):
                 return value
         try:
             executed_qty = Decimal(str(order.get("executedQty", "0") or "0"))
-            cum_quote = Decimal(str(order.get("cumQuote", order.get("cumQuoteQty", "0")) or "0"))
+            cum_quote = Decimal(
+                str(
+                    order.get(
+                        "cumQuote",
+                        order.get("cummulativeQuoteQty", order.get("cumQuoteQty", "0")),
+                    )
+                    or "0"
+                )
+            )
         except Exception:
             return None
         if executed_qty > 0 and cum_quote > 0:

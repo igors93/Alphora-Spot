@@ -17,9 +17,21 @@ def extract_symbol_rules(exchange_info: dict, symbol: str) -> SymbolRules:
 
     filters = {item["filterType"]: item for item in symbol_data.get("filters", [])}
 
-    lot_filter = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE")
+    market_lot_filter = filters.get("MARKET_LOT_SIZE")
+    base_lot_filter = filters.get("LOT_SIZE")
+    lot_filter = market_lot_filter or base_lot_filter
+    if (
+        market_lot_filter
+        and base_lot_filter
+        and (
+            Decimal(str(market_lot_filter.get("stepSize", "0") or "0")) <= 0
+            or Decimal(str(market_lot_filter.get("minQty", "0") or "0")) <= 0
+        )
+    ):
+        lot_filter = base_lot_filter
+
     price_filter = filters.get("PRICE_FILTER")
-    min_notional_filter = filters.get("MIN_NOTIONAL")
+    min_notional_filter = filters.get("MIN_NOTIONAL") or filters.get("NOTIONAL")
 
     if not lot_filter:
         raise ValueError(f"{symbol} não possui filtro MARKET_LOT_SIZE/LOT_SIZE")

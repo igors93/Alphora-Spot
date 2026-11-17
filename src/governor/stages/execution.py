@@ -1319,9 +1319,10 @@ class ExecutionStage:
             order_ids=execution_result.order_ids,
             diagnostics=execution_result.diagnostics,
         )
-        if self.ports.config.mutations_enabled and (
-            execution_result.position_changed or execution_result.order_ids
-        ):
+        if (
+            self.ports.config.mutations_enabled
+            or getattr(getattr(self.ports.config, "execution_mode", None), "is_paper", False)
+        ) and (execution_result.position_changed or execution_result.order_ids):
             self.ports.invalidate_private_state(
                 evaluation.cycle_context,
                 symbol=symbol_config.symbol,

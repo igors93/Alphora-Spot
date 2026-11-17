@@ -19,7 +19,10 @@ LEGACY_ENV_PREFIX = "ALPHORA_COALESTRA_"  # legacy-wire-name (ADR-002)
 FALLBACK_ALLOWED_ENV = "ALPHORA_SNAPSHOT_FALLBACK_ALLOWED"
 CANDLE_KLINES_URL_ENV = "ALPHORA_CANDLE_KLINES_URL"
 DEFAULT_CANDLE_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
+DEFAULT_SPOT_CANDLE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 _KLINES_PATH = "/fapi/v1/klines"
+_SPOT_KLINES_PATH = "/api/v3/klines"
+_ALLOWED_KLINES_PATHS = {_KLINES_PATH, _SPOT_KLINES_PATH}
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,8 @@ def load_snapshot_fallback_allowed() -> bool | None:
 def load_candle_klines_url() -> str:
     raw = os.getenv(CANDLE_KLINES_URL_ENV)
     if raw is None or not raw.strip():
+        if os.getenv("ALPHORA_MARKET_TYPE", "").strip().upper() == "SPOT":
+            return DEFAULT_SPOT_CANDLE_KLINES_URL
         return DEFAULT_CANDLE_KLINES_URL
     return raw.strip()
 
@@ -119,9 +124,9 @@ def validate_candle_klines_url(url: str) -> None:
     parts = urlsplit(str(url or ""))
     if parts.scheme != "https" or not parts.netloc:
         raise ValueError(f"{CANDLE_KLINES_URL_ENV} precisa ser uma URL https")
-    if parts.path.rstrip("/") != _KLINES_PATH or parts.query or parts.fragment:
+    if parts.path.rstrip("/") not in _ALLOWED_KLINES_PATHS or parts.query or parts.fragment:
         raise ValueError(
-            f"{CANDLE_KLINES_URL_ENV} precisa apontar para o endpoint {_KLINES_PATH}, sem parametros"
+            f"{CANDLE_KLINES_URL_ENV} precisa apontar para o endpoint {_KLINES_PATH} ou {_SPOT_KLINES_PATH}, sem parametros"
         )
 
 

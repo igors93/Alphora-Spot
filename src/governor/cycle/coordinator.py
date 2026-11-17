@@ -289,7 +289,15 @@ class CycleCoordinator:
         """Stages 9–22, one symbol at a time (an order invalidates later prefetches)."""
 
         ports = self.ports
-        for symbol, evaluation, started_perf in prepared:
+        ordered_prepared = sorted(
+            enumerate(prepared),
+            key=lambda item: (
+                0 if bool(getattr(getattr(item[1][1], "position", None), "is_open", False)) else 1,
+                -int(getattr(getattr(item[1][1], "score", None), "score", 0) or 0),
+                item[0],
+            ),
+        )
+        for _, (symbol, evaluation, started_perf) in ordered_prepared:
             status = "OK"
             try:
                 ports.resume_symbol_evaluation(evaluation)
