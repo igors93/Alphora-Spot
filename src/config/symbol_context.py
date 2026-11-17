@@ -71,8 +71,12 @@ class PortfolioRiskSettings:
     governor_max_symbols_per_cycle: int = 20
     correlation_groups: dict[str, str] = field(default_factory=dict)
     correlation_group_mode: str = "OBSERVE"
+    spot_usdt_reserve: float = 5.0
+    spot_fee_buffer_pct: float = 0.002
 
     def __post_init__(self) -> None:
+        if self.spot_usdt_reserve < 0 or self.spot_fee_buffer_pct < 0:
+            raise ValueError("Reserva USDT e buffer de taxas Spot nao podem ser negativos")
         object.__setattr__(
             self,
             "correlation_groups",
@@ -451,6 +455,8 @@ def portfolio_settings_from_dict(payload: dict[str, Any]) -> PortfolioRiskSettin
         correlation_group_mode=_normalize_correlation_group_mode(
             payload.get("correlation_group_mode", "OBSERVE")
         ),
+        spot_usdt_reserve=_float(payload.get("spot_usdt_reserve", 5.0)),
+        spot_fee_buffer_pct=_float(payload.get("spot_fee_buffer_pct", 0.002)),
     )
 
 

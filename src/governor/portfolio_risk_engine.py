@@ -292,16 +292,30 @@ class PortfolioRiskEngine:
         available = Decimal(str(account_snapshot.get("available_balance_usdt", "0")))
         leverage = max(1, _leverage_for_symbol(context))
         required_margin = candidate_notional / Decimal(str(leverage))
-        required_with_safety = required_margin * Decimal("1.10")
+        spot_mode = account_snapshot.get("market_type") == "SPOT"
+        fee_buffer = (
+            candidate_notional * Decimal(str(self.settings.spot_fee_buffer_pct))
+            if spot_mode else Decimal("0")
+        )
+        reserve = (
+            Decimal(str(self.settings.spot_usdt_reserve))
+            if spot_mode else Decimal("0")
+        )
+        pending = Decimal(str(account_snapshot.get("pending_order_reserve_usdt", "0")))
+        required_with_safety = required_margin * Decimal("1.10") + fee_buffer + reserve + pending
         checks.update(
             {
                 "leverage": leverage,
                 "required_margin_usdt": str(required_margin),
                 "required_margin_with_safety_usdt": str(required_with_safety),
                 "available_balance_usdt": str(available),
+                "spot_fee_buffer_usdt": str(fee_buffer),
+                "spot_usdt_reserve": str(reserve),
+                "pending_order_reserve_usdt": str(pending),
+                "locked_usdt": account_snapshot.get("locked_usdt", "0"),
             }
         )
-        if available > 0 and available < required_with_safety:
+        if available <= 0 or available < required_with_safety:
             return self._blocked(intent, "BALANCE_INSUFFICIENT", checks, account_snapshot)
 
         return self._approved(intent, account_snapshot, "APPROVED", checks)

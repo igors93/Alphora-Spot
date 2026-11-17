@@ -89,7 +89,17 @@ class PortfolioSnapshotProvider:
                 )
             else:
                 spot_equity = account_info["spotEquityUSDT"]
+                account_snapshot["market_type"] = "SPOT"
                 account_snapshot["equity_usdt"] = spot_equity
+                account_snapshot["locked_usdt"] = str(
+                    next(
+                        (
+                            asset.get("locked", "0") for asset in account_info.get("assets", [])
+                            if asset.get("asset") == "USDT"
+                        ),
+                        "0",
+                    )
+                )
                 prices = account_info.get("spotAssetPricesUSDT", {})
                 for position in positions:
                     asset = position["symbol"].removesuffix("USDT")
