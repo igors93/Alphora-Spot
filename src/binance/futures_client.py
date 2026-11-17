@@ -772,24 +772,6 @@ class BinanceFuturesClient:
 
             entry_price = self.spot_holdings.average_cost(sym)
 
-            ref_price = current_price if current_price > 0 else entry_price
-            notional = total_qty * ref_price if ref_price > 0 else total_qty
-            if ref_price > 0 and notional < Decimal("5"):
-                # Ignore tiny Spot fee dust (< $5 USDT) as flat.
-                with self._spot_state_lock:
-                    self._spot_entry_prices.pop(sym, None)
-                    self._spot_position_quantities.pop(sym, None)
-                results.append(
-                    {
-                        "symbol": sym,
-                        "positionAmt": "0",
-                        "entryPrice": "0",
-                        "unRealizedProfit": "0",
-                        "positionSide": "BOTH",
-                    }
-                )
-                continue
-
             effective_qty = total_qty
             unrealized_pnl = (
                 (current_price - entry_price) * effective_qty
@@ -831,6 +813,7 @@ class BinanceFuturesClient:
         # On Spot SELL, if base-asset commission slightly reduced free balance below
         # the nominal position quantity, clamp to available free balance so the close succeeds.
         if side == "SELL" and symbol and requested_qty is not None and requested_qty > 0:
+            self.account_info()
             owned_qty = self.spot_holdings.quantity(symbol)
             if owned_qty <= 0:
                 raise ValueError("Venda Spot bloqueada: ativo nao pertence ao bot")
@@ -839,7 +822,9 @@ class BinanceFuturesClient:
             base_asset = _spot_base_asset(symbol)
             with self._spot_state_lock:
                 free_qty, _ = self._spot_balances.get(base_asset, (Decimal("0"), Decimal("0")))
-            if Decimal("0") < free_qty < requested_qty:
+            if free_qty <= 0:
+                raise ValueError("Venda Spot bloqueada: saldo livre zero")
+            if free_qty < requested_qty:
                 clean_params["quantity"] = str(free_qty.normalize())
 
         clean_params.setdefault("newOrderRespType", "FULL")

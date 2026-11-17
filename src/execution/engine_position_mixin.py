@@ -1781,6 +1781,34 @@ class EnginePositionMixin(EngineMixinHost):
             return preparation
         position, pending_trade_id = preparation
 
+        if getattr(self.client, "spot_mode", False) and self.config.mutations_enabled:
+            if not self._safe_cancel_all_open_orders(reason="spot_unlock_before_close"):
+                self._pause_engine("spot_protection_cancel_unconfirmed")
+                return PositionExecutionResult.blocked("SPOT_PROTECTION_CANCEL_UNCONFIRMED")
+            remaining_protections = self._safe_get_open_algo_orders()
+            if not remaining_protections.ok or remaining_protections.orders:
+                self._pause_engine("spot_protection_still_open")
+                return PositionExecutionResult.blocked("SPOT_PROTECTION_STILL_OPEN")
+            account = self.client.account_info()
+            base_asset = self.config.symbol.removesuffix("USDT")
+            free_quantity = next(
+                (
+                    Decimal(str(asset.get("availableBalance", "0")))
+                    for asset in account.get("assets", []) if asset.get("asset") == base_asset
+                ),
+                Decimal("0"),
+            )
+            negotiable = min(position.quantity, free_quantity)
+            if negotiable <= 0:
+                self._pause_engine("spot_base_balance_locked", free_quantity=str(free_quantity))
+                return PositionExecutionResult.blocked("SPOT_BASE_BALANCE_LOCKED")
+            if negotiable < position.quantity:
+                self._record_journal(
+                    "spot_partial_close_required", owned_quantity=position.quantity,
+                    negotiable_quantity=negotiable,
+                )
+                position = replace(position, quantity=negotiable)
+
         submission = self._submit_close(
             position=position, reason=reason, pending_trade_id=pending_trade_id
         )
